@@ -26,6 +26,8 @@ pub enum Route {
     ListJson,
     /// `GET admin.<zone>/status/<E>`: forward to the object named E for its status.
     Status(PublicKey),
+    /// `DELETE admin.<zone>/endpoints/<E>`: destroy the endpoint named E.
+    Destroy(PublicKey),
     /// `GET <E>.<zone>/relay` with `Upgrade: websocket`: forward to the DO named E.
     Relay(PublicKey),
     /// `GET <E>.<zone>/ping` or `/generate_204`: answer in the router.
@@ -103,6 +105,12 @@ pub fn classify(
             (_, "/mint") => Route::MethodNotAllowed,
             ("GET", "/") => Route::ListPage,
             ("GET", "/endpoints.json") => Route::ListJson,
+            ("DELETE", p) if p.starts_with("/endpoints/") => {
+                match p.strip_prefix("/endpoints/").and_then(parse_endpoint_label) {
+                    Some(id) => Route::Destroy(id),
+                    None => Route::NotFound,
+                }
+            }
             ("GET", p) => match p.strip_prefix("/status/").and_then(parse_endpoint_label) {
                 Some(id) => Route::Status(id),
                 None => Route::NotFound,
@@ -291,6 +299,31 @@ mod tests {
         }
         let hex = format!("/status/{}", "0".repeat(64));
         assert_eq!(classify(&admin, "GET", &hex, false, ZONE), Route::NotFound);
+    }
+
+    #[test]
+    fn admin_destroy() {
+        let admin = format!("admin.{ZONE}");
+        let id = key();
+        let path = format!("/endpoints/{}", id.to_z32());
+        assert_eq!(
+            classify(&admin, "DELETE", &path, false, ZONE),
+            Route::Destroy(id)
+        );
+        // Only DELETE, and only on the admin host, with a valid id.
+        assert_eq!(classify(&admin, "GET", &path, false, ZONE), Route::NotFound);
+        let room = format!("{}.{ZONE}", id.to_z32());
+        assert_eq!(
+            classify(&room, "DELETE", &path, false, ZONE),
+            Route::NotFound
+        );
+        for bad in ["/endpoints/", "/endpoints/registry", "/endpoints/../mint"] {
+            assert_eq!(
+                classify(&admin, "DELETE", bad, false, ZONE),
+                Route::NotFound,
+                "{bad}"
+            );
+        }
     }
 
     #[test]

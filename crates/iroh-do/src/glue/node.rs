@@ -41,6 +41,15 @@ pub fn register(local: EndpointId, store: Store, storage: Storage) {
     });
 }
 
+/// Drop the storage handles of `local`. Afterwards every [`Host`] storage call
+/// for it is a no-op, so tasks of a destroyed endpoint that are still winding
+/// down cannot write to its emptied storage.
+pub fn unregister(local: &EndpointId) {
+    HANDLES.with(|h| {
+        h.borrow_mut().remove(local);
+    });
+}
+
 /// Persisted counter of Endpoint instantiations (reported by `/status`).
 pub const COUNTER_ENDPOINT_BUILDS: &str = "endpoint_builds";
 

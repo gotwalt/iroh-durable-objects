@@ -10,7 +10,9 @@ use worker::{
     SqlStorageValue, State, durable_object,
 };
 
-use crate::registry::{Entry, LIST, LIST_LIMIT, MAX_LABEL, REGISTER, REGISTRY_NAME, SCHEMA};
+use crate::registry::{
+    Entry, LIST, LIST_LIMIT, MAX_LABEL, REGISTER, REGISTRY_NAME, SCHEMA, UNREGISTER,
+};
 
 /// Durable Object namespace binding of the registry.
 pub const REGISTRY_BINDING: &str = "REGISTRY";
@@ -18,6 +20,8 @@ pub const REGISTRY_BINDING: &str = "REGISTRY";
 const INTERNAL_REGISTER: &str = "/_internal/register";
 /// Internal path: list endpoints, newest first.
 const INTERNAL_LIST: &str = "/_internal/list";
+/// Internal path: remove an endpoint (its z-base-32 id is the request body).
+const INTERNAL_UNREGISTER: &str = "/_internal/unregister";
 
 /// The endpoint registry, exported to JS as `registry`.
 #[allow(non_camel_case_types)]
@@ -59,6 +63,15 @@ impl DurableObject for registry {
                 tracing::info!(event = "registry_entry", endpoint = %entry);
                 Response::empty()
             }
+            (Method::Post, INTERNAL_UNREGISTER) => {
+                let id = req.text().await?;
+                if iroh_base::PublicKey::from_z32(&id).is_err() {
+                    return Response::error("bad id", 400);
+                }
+                self.sql.exec(UNREGISTER, vec![id.clone().into()])?;
+                tracing::info!(event = "registry_remove", endpoint = %id);
+                Response::empty()
+            }
             (Method::Get, INTERNAL_LIST) => {
                 let rows: Vec<Entry> = self
                     .sql
@@ -86,6 +99,22 @@ pub async fn register(env: &Env, entry: &Entry) -> Result<()> {
         .with_headers(headers)
         .with_body(Some(serde_json::to_string(entry)?.into()));
     let req = Request::new_with_init(&format!("https://do{INTERNAL_REGISTER}"), &init)?;
+    let resp = stub(env)?.fetch_with_request(req).await?;
+    if resp.status_code() / 100 != 2 {
+        return Err(worker::Error::RustError(format!(
+            "registry answered {}",
+            resp.status_code()
+        )));
+    }
+    Ok(())
+}
+
+/// Removes `id` (z-base-32) from the registry. Removing an absent id succeeds.
+pub async fn unregister(env: &Env, id: &str) -> Result<()> {
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post)
+        .with_body(Some(id.to_string().into()));
+    let req = Request::new_with_init(&format!("https://do{INTERNAL_UNREGISTER}"), &init)?;
     let resp = stub(env)?.fetch_with_request(req).await?;
     if resp.status_code() / 100 != 2 {
         return Err(worker::Error::RustError(format!(

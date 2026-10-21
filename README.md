@@ -159,6 +159,7 @@ cp infra/examples/terraform.tfvars.example infra/mine.auto.tfvars   # account an
 export CLOUDFLARE_API_TOKEN=...
 just up      # build and apply; OpenTofu owns every resource
 just mint friends   # create an endpoint labelled "friends"; prints E and the join command
+just destroy-room <E>   # delete an endpoint, its key and its history (asks first)
 just demo           # the scripted session above
 just plan    # expect no changes
 just down    # delete everything, identities included

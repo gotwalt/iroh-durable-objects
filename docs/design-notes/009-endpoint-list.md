@@ -43,7 +43,31 @@ each status request wakes that endpoint's object. The page never polls.
 
 `GET /endpoints.json` returns the same list as JSON.
 
+## Destroying an endpoint
+
+```
+DELETE https://admin.<zone>/endpoints/<E>
+Authorization: Bearer <ADMIN_TOKEN>
+```
+
+Added 2026-10-21, after a room id was published by mistake. The router
+checks the token as for minting and calls the object's internal destroy path.
+The object closes every relay socket (code 1000, reason `destroyed`), drops
+its node, deletes its alarm, and calls `deleteAll()`, which removes the key,
+the log and every other table. Node tasks still winding down find no storage
+handles and write nothing. The router then removes `E` from the registry and
+answers `{id, destroyed: true}`.
+
+Afterwards the object is indistinguishable from one that was never minted:
+relay upgrades and `/status` get 404 and no request writes storage, because
+the constructor writes only for an object with an identity. Destroying an id
+that was never minted, or destroying twice, is 404. If the registry update
+fails after the object was destroyed, the router answers 502; a retry finds
+the object unminted and removes the stale entry. `just destroy-room <E>` wraps
+the call and asks for confirmation. `harness/workerd/destroy-test.mjs` checks
+all of the above.
+
 ## Not in scope
 
-Authentication for the page, deleting or hiding endpoints, pagination beyond
-the newest 500.
+Authentication for the page, hiding endpoints without destroying them,
+pagination beyond the newest 500.

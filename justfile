@@ -107,6 +107,38 @@ mint LABEL="":
     just _mint "$admin" "{{demo_dir}}/admin_token" "{{demo_dir}}/endpoint"
     echo "join:      just chat $(cat "{{demo_dir}}/endpoint")"
 
+# Destroy endpoint E: close its sockets, delete its key and history, drop it from the list.
+# Cannot be undone. Asks first unless CONFIRM=1. LOCAL=1 targets the local workerd.
+destroy-room E:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    e={{quote(E)}}
+    [[ "$e" =~ ^[ybndrfg8ejkmcpqxot1uwisza345h769]{52}$ ]] || {
+        echo "error: '$e' is not an EndpointId (52 characters of z-base-32)" >&2; exit 1; }
+    extra=()
+    if [ -n "${LOCAL:-}" ]; then
+        port="${LOCAL_PORT:-$(cat "{{demo_dir}}/local-up.port" 2>/dev/null || echo 8787)}"
+        admin="http://admin.localhost:$port"
+        token="{{demo_dir}}/admin_token.local"
+        extra=(--resolve "admin.localhost:$port:127.0.0.1")
+    else
+        export TF_VAR_state_passphrase="$(cat "{{demo_dir}}/state_passphrase")"
+        admin=$(tofu -chdir="{{infra}}" output -raw admin_url)
+        token="{{demo_dir}}/admin_token"
+    fi
+    [ -s "$token" ] || { echo "error: $token missing" >&2; exit 1; }
+    if [ "${CONFIRM:-}" != 1 ]; then
+        read -r -p "Destroy $e, its key and its history at $admin? This cannot be undone. [y/N] " answer
+        [[ "$answer" =~ ^[yY]$ ]] || { echo "aborted"; exit 1; }
+    fi
+    # Token goes to curl on stdin (-K -), never on argv.
+    printf 'header = "Authorization: Bearer %s"\n' "$(cat "$token")" \
+        | curl -fsS -K - ${extra[@]+"${extra[@]}"} -X DELETE "$admin/endpoints/$e"
+    echo
+    for f in "{{demo_dir}}/endpoint" "{{demo_dir}}/endpoint.local"; do
+        if [ "$(cat "$f" 2>/dev/null)" = "$e" ]; then rm -f "$f"; fi
+    done
+
 # Scripted lifecycle evidence run against the deployed endpoint (extra ARGS go to `lifecycle`).
 demo *ARGS: build-demo
     #!/usr/bin/env bash

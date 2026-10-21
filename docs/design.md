@@ -347,6 +347,12 @@ export path. The admin token is an OpenTofu variable; the keys never pass
 through OpenTofu. The request body may carry a `label`, which the router
 records with the new id in the registry.
 
+`DELETE https://admin.<zone>/endpoints/<E>`, with the same token, destroys an
+endpoint: the object closes its sockets, deletes its alarm and all of its
+storage, key included, and the router removes `E` from the registry. The
+object is then indistinguishable from one never minted
+([`design-notes/009`](design-notes/009-endpoint-list.md)). There is no undo.
+
 ## Endpoint list
 
 Cloudflare lists Durable Objects by internal id, not by the name they were

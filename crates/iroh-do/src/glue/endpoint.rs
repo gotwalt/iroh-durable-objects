@@ -39,7 +39,8 @@ use super::{
     node::{self, DoHost},
     pkarr_publish, registry,
     router::{
-        INTERNAL_MINT, INTERNAL_STATUS, MintRequest, MintResponse, NAME_HEADER, ROOMS_BINDING,
+        DestroyResponse, INTERNAL_DESTROY, INTERNAL_MINT, INTERNAL_STATUS, MintRequest,
+        MintResponse, NAME_HEADER, ROOMS_BINDING,
     },
     store::{Due, Identity, Store},
 };
@@ -55,6 +56,8 @@ const TAG_SID: &str = "sid:";
 const CLOSE_SUPERSEDED: u16 = 4000;
 /// Close code when the DO refuses traffic (no/invalid identity).
 const CLOSE_REFUSED: u16 = 1011;
+/// Close code for sockets of a destroyed endpoint (normal closure).
+const CLOSE_DESTROYED: u16 = 1000;
 
 /// Schedule key for the pkarr republish.
 pub const SCHED_REPUBLISH: &str = "republish";
@@ -474,6 +477,57 @@ impl room {
         })
     }
 
+    /// Destroys this endpoint: closes every socket, drops the node, deletes the
+    /// alarm and all storage, identity included. Afterwards the object is
+    /// indistinguishable from one that was never minted: it refuses traffic and
+    /// writes nothing (§13.4.5). Answers 404 if there is no identity to destroy.
+    async fn internal_destroy(&self, req: Request) -> Result<Response> {
+        let Some(name) = req.headers().get(NAME_HEADER)? else {
+            return Response::error("missing name", 400);
+        };
+        let is_me = match self.env.durable_object(ROOMS_BINDING) {
+            Ok(ns) => ns.id_from_name(&name).is_ok_and(|id| id == self.state.id()),
+            Err(_) => false,
+        };
+        if !is_me {
+            error!(event = "destroy_name_mismatch", object = %self.state.id());
+            return Response::error("name mismatch", 400);
+        }
+        // A refused object (identity invariant violated) holds an identity too.
+        if self.me.borrow().is_none() && !self.refused.get() {
+            return Response::error("not found", 404);
+        }
+        let t0 = now_ms();
+        let local = self.me.borrow().as_ref().map(|m| m.id);
+        let sockets = self.state.get_websockets();
+        for ws in &sockets {
+            let _ = ws.close(Some(CLOSE_DESTROYED), Some("destroyed"));
+        }
+        self.sessions.borrow_mut().clear();
+        if let Some(local) = local {
+            links::reset(&local);
+            // Node tasks still winding down then find no storage to write to.
+            node::unregister(&local);
+        }
+        self.node.borrow_mut().take();
+        self.me.borrow_mut().take();
+        self.refused.set(false);
+        self.wakes.set(0);
+        let storage = self.state.storage();
+        storage.delete_alarm().await?;
+        storage.delete_all().await?;
+        info!(
+            event = "destroy",
+            endpoint = %name,
+            sockets = sockets.len(),
+            ms = now_ms() - t0,
+        );
+        Response::from_json(&DestroyResponse {
+            id: name,
+            destroyed: true,
+        })
+    }
+
     /// Records this endpoint in the registry and sets the `registered` flag.
     /// A failure is logged; the next wake tries again.
     async fn register(&self, label: String) {
@@ -671,6 +725,9 @@ impl DurableObject for room {
         let path = req.path();
         if path == INTERNAL_MINT && req.method() == worker::Method::Post {
             return self.internal_mint(req).await;
+        }
+        if path == INTERNAL_DESTROY && req.method() == worker::Method::Post {
+            return self.internal_destroy(req).await;
         }
         if self.refused.get() {
             return Response::error("refused", 503);

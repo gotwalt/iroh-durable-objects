@@ -28,6 +28,9 @@ pub const SCHEMA: &[&str] = &[
 /// such as a backfill racing a mint, keeps the first.
 pub const REGISTER: &str =
     "INSERT INTO endpoints(id, label, minted_at) VALUES (?, ?, ?) ON CONFLICT(id) DO NOTHING";
+
+/// Removes one endpoint from the list (it was destroyed).
+pub const UNREGISTER: &str = "DELETE FROM endpoints WHERE id = ?";
 /// The newest `?` endpoints.
 pub const LIST: &str = "SELECT id, label, minted_at FROM endpoints ORDER BY minted_at DESC LIMIT ?";
 

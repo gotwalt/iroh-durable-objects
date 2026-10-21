@@ -24,6 +24,9 @@ pub const ROOMS_BINDING: &str = "ROOMS";
 pub const INTERNAL_MINT: &str = "/_internal/mint";
 /// Internal status path of an endpoint object: its `/status` JSON, or 404 if unminted.
 pub const INTERNAL_STATUS: &str = "/_internal/status";
+/// Internal destroy path of an endpoint object: closes its sockets and deletes all of its
+/// storage, or answers 404 if it was never minted.
+pub const INTERNAL_DESTROY: &str = "/_internal/destroy";
 /// Header carrying the router-computed z32 name on internal calls.
 pub const NAME_HEADER: &str = "x-iroh-do-name";
 
@@ -42,6 +45,15 @@ pub struct MintRequest {
     /// Label for the endpoint list; may be empty.
     #[serde(default)]
     pub label: String,
+}
+
+/// Destroy response (to the admin caller and from the DO).
+#[derive(Serialize, Deserialize)]
+pub struct DestroyResponse {
+    /// EndpointId, z-base-32.
+    pub id: String,
+    /// Always `true`; a never-minted id gets 404 instead.
+    pub destroyed: bool,
 }
 
 /// Mint response (to the admin caller and from the DO).
@@ -87,6 +99,7 @@ pub async fn handle(req: Request, env: Env) -> Result<Response> {
             stub.fetch_with_request(req).await
         }
         Route::Mint => mint(req, &env, &zone).await,
+        Route::Destroy(id) => destroy(req, &env, &id.to_z32()).await,
         Route::ListPage => {
             let html = page(&registry::list(&env).await?);
             let h = Headers::new();
@@ -121,7 +134,9 @@ pub async fn handle(req: Request, env: Env) -> Result<Response> {
     }
 }
 
-async fn mint(mut req: Request, env: &Env, zone: &str) -> Result<Response> {
+/// Checks the admin bearer token. Returns the response to send if the request
+/// is not authorized.
+fn admin_auth(req: &Request, env: &Env) -> Result<Option<Response>> {
     let Some(expected) = env
         .secret("ADMIN_TOKEN")
         .ok()
@@ -129,16 +144,60 @@ async fn mint(mut req: Request, env: &Env, zone: &str) -> Result<Response> {
         .filter(|s| !s.is_empty())
     else {
         error!(event = "config_error", missing = "ADMIN_TOKEN");
-        return Response::error("minting disabled", 503);
+        return Ok(Some(Response::error("admin disabled", 503)?));
     };
     let auth = req.headers().get("authorization")?;
     let ok = route::bearer(auth.as_deref())
         .is_some_and(|t| route::ct_eq(t.as_bytes(), expected.as_bytes()));
     if !ok {
         warn!(event = "admin_auth", ok = false, path = %req.path());
-        return Response::error("unauthorized", 401);
+        return Ok(Some(Response::error("unauthorized", 401)?));
     }
     info!(event = "admin_auth", ok = true, path = %req.path());
+    Ok(None)
+}
+
+/// Destroys the endpoint `id`: the object closes its sockets and deletes its
+/// storage, including the identity, then the id leaves the registry. A retry
+/// after a failed registry update finds the object unminted (404) and removes
+/// the stale registry entry again.
+async fn destroy(req: Request, env: &Env, id: &str) -> Result<Response> {
+    if let Some(denied) = admin_auth(&req, env)? {
+        return Ok(denied);
+    }
+    let headers = Headers::new();
+    headers.set(NAME_HEADER, id)?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post).with_headers(headers);
+    let inner = Request::new_with_init(&format!("https://do{INTERNAL_DESTROY}"), &init)?;
+    let stub = env
+        .durable_object(ROOMS_BINDING)?
+        .id_from_name(id)?
+        .get_stub()?;
+    let resp = stub.fetch_with_request(inner).await?;
+    let status = resp.status_code();
+    if status != 200 && status != 404 {
+        return Ok(resp);
+    }
+    if let Err(e) = registry::unregister(env, id).await {
+        warn!(event = "registry_remove", endpoint = %id, ok = false, error = %e);
+        if status == 200 {
+            return Response::error("destroyed; registry update failed, retry", 502);
+        }
+    }
+    if status == 404 {
+        return Response::error("not found", 404);
+    }
+    Response::from_json(&DestroyResponse {
+        id: id.to_string(),
+        destroyed: true,
+    })
+}
+
+async fn mint(mut req: Request, env: &Env, zone: &str) -> Result<Response> {
+    if let Some(denied) = admin_auth(&req, env)? {
+        return Ok(denied);
+    }
 
     let label = match mint_label(&req.text().await?) {
         Ok(l) => l,
