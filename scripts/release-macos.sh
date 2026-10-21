@@ -135,12 +135,13 @@ if [ "$status" != "Accepted" ]; then
 fi
 
 step "check"
-if command -v syspolicy_check >/dev/null 2>&1; then
-    syspolicy_check distribution "$bin"
-else
-    # Not authoritative for a bare binary; reported, not enforced.
-    spctl -a -vv -t install "$bin" || echo "spctl did not confirm; check by downloading the release"
-fi
+# A bare Mach-O binary cannot carry a stapled ticket, so `syspolicy_check
+# distribution` always fails on it. Gatekeeper's install assessment looks the
+# ticket up online and is what a user's machine does on first run.
+assessment=$(spctl -a -vv -t install "$bin" 2>&1) || true
+echo "$assessment"
+grep -q "source=Notarized Developer ID" <<<"$assessment" \
+    || die "Gatekeeper does not report the binary as notarized"
 
 (cd "$dist" && shasum -a 256 "$bundle.zip" > SHA256SUMS)
 cat "$dist/SHA256SUMS"
