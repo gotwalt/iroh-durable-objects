@@ -738,7 +738,7 @@ pub(crate) fn expect_status(reply: &str) -> Result<Status> {
 mod shorthand_tests {
     use super::with_chat_shorthand;
 
-    const E: &str = "84xjormz6935pd1rwzr9bz1qix1tgshen66h8qx5yutsfr41qu8y";
+    const E: &str = "7xxnbqdaoffdfm1nfp9jmzgsynh4q3jit8nc9rygjcnn7heumqay";
 
     fn run(args: &[&str]) -> Vec<String> {
         with_chat_shorthand(args.iter().map(|a| (*a).into()).collect())
