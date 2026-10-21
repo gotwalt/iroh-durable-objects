@@ -1,0 +1,10 @@
+## S2 start 2026-10-21T19:03:03.052789Z E=<E-S2> cmd=listen --timeout 180
+local endpoint: m4wd8n1qwpuwtngimg14nhfr7is7oh1ei6d9k7hd31ep5wqj1soy
+target:         <E-S2> via explicit relay URL https://<E-S2>.iroh-do.example.com/
+-- connected in 444.5 ms | relay https://<E-S2>.iroh-do.example.com/ | path RTT 443.7 ms | 0-RTT: not attempted (no ticket)
+<< echo: hello (#1, total 1, yours 1) (103.3 ms)
+<< (uni) hello from <E-S2>: you are m4wd8n1qwpuwtngimg14nhfr7is7oh1ei6d9k7hd31ep5wqj1soy
+-- chat connection closed; endpoint m4wd8n1qwpuwtngimg14nhfr7is7oh1ei6d9k7hd31ep5wqj1soy stays up and accepts notify/1
+-- note: our relay socket to the DO lives <= 60 s after our last send (V5); a dial-back must happen inside that window
+-- timeout
+## S2 end 2026-10-21T19:06:03.986470Z rc=0

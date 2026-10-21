@@ -1,0 +1,64 @@
+{
+ "mode": "peers",
+ "bundle": "1927f9964c46380caf8cd01eb3eaa77eb7de780eddd1db5f233e38fabba3e8ac",
+ "samples": [
+  {
+   "label": "isolate up, module instantiated (router only)",
+   "t_ms": 1792610435686,
+   "wasm_bytes": 1703936,
+   "wasm_mib": 1.63
+  },
+  {
+   "label": "(a) after mint: DO constructed, no Endpoint",
+   "t_ms": 1792610435712,
+   "wasm_bytes": 1703936,
+   "wasm_mib": 1.63
+  },
+  {
+   "label": "(b) Active, 1 chat connection",
+   "t_ms": 1792610436823,
+   "wasm_bytes": 1835008,
+   "wasm_mib": 1.75,
+   "connected": 1
+  },
+  {
+   "label": "(c) Active, 10 chat connections",
+   "t_ms": 1792610438052,
+   "wasm_bytes": 2686976,
+   "wasm_mib": 2.56,
+   "connected_new": 9
+  },
+  {
+   "label": "(c) Active, 50 chat connections",
+   "t_ms": 1792610441516,
+   "wasm_bytes": 6815744,
+   "wasm_mib": 6.5,
+   "connected_new": 40
+  },
+  {
+   "label": "(c) 50 connections after one more line each",
+   "t_ms": 1792610443524,
+   "wasm_bytes": 7208960,
+   "wasm_mib": 6.88
+  },
+  {
+   "label": "(d) all peers gone +14 s: Endpoint torn down",
+   "t_ms": 1792610459818,
+   "wasm_bytes": 7208960,
+   "wasm_mib": 6.88
+  },
+  {
+   "label": "(d) after forced eviction (wasm memory never shrinks)",
+   "t_ms": 1792610459940,
+   "wasm_bytes": 7208960,
+   "wasm_mib": 6.88
+  },
+  {
+   "label": "(d') new Active period, 10 connections, same isolate",
+   "t_ms": 1792610461161,
+   "wasm_bytes": 7208960,
+   "wasm_mib": 6.88,
+   "connected_new": 10
+  }
+ ]
+}

@@ -1,0 +1,244 @@
+From 03e737caf95005d5d97467df777ded49a5be1992 Mon Sep 17 00:00:00 2001
+From: Aaron Gotwalt <gotwalt@gmail.com>
+Date: Wed, 21 Oct 2026 09:53:02 -0700
+Subject: [PATCH 1/2] feat(iroh): add Builder::stateless_reset_key
+
+An endpoint that stops without closing its connections (crash, killed
+process, evicted host) leaves its peers waiting for their idle timeout.
+QUIC stateless resets exist to shorten that, but they cannot work across
+a restart today: iroh generates a random reset key and noq a random
+HashedConnectionIdGenerator key on every bind. The new instance therefore
+classifies every old connection ID as invalid and drops the packet
+(noq-proto endpoint.rs: CID validation runs before stateless_reset), and
+even if it did answer, the token would not match.
+
+Builder::stateless_reset_key([u8; 32]) supplies one secret from which
+both the noq reset key and the CID generator key are derived (blake3
+derive_key, distinct contexts), so they cannot get out of sync. Without
+it, behaviour is unchanged: a fresh random key per bind and noq's default
+CID generator.
+
+No noq changes are needed: EndpointConfig::reset_key, ::cid_generator and
+HashedConnectionIdGenerator::from_key are public in noq-proto 1.4.0.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_015wVZzxfjCToSkbCjdePxVL
+---
+ iroh/src/endpoint.rs | 34 ++++++++++++++++++++++++-
+ iroh/src/socket.rs   | 23 ++++++++++++++---
+ iroh/src/tls/misc.rs | 60 ++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 113 insertions(+), 4 deletions(-)
+
+diff --git a/iroh/src/endpoint.rs b/iroh/src/endpoint.rs
+index 4a0452e..019d18a 100644
+--- a/iroh/src/endpoint.rs
++++ b/iroh/src/endpoint.rs
+@@ -79,7 +79,10 @@ use crate::{
+         remote_map::PathSelector,
+         transports::{RelayConnectionFailure, RelayConnectionState},
+     },
+-    tls::{self, DEFAULT_MAX_TLS_TICKETS, misc::RustlsTokenKey},
++    tls::{
++        self, DEFAULT_MAX_TLS_TICKETS,
++        misc::{RustlsTokenKey, StatelessResetSecret},
++    },
+ };
+ 
+ #[cfg(not(wasm_browser))]
+@@ -150,6 +153,7 @@ pub struct Builder {
+     net_report_config: NetReportConfig,
+     crypto_provider: Option<Arc<rustls::crypto::CryptoProvider>>,
+     configured_addrs: BTreeSet<SocketAddr>,
++    stateless_reset_secret: Option<StatelessResetSecret>,
+ }
+ 
+ impl From<RelayMode> for Option<TransportConfig> {
+@@ -218,6 +222,7 @@ impl Builder {
+             net_report_config: Default::default(),
+             crypto_provider: None,
+             configured_addrs: Default::default(),
++            stateless_reset_secret: None,
+         }
+     }
+ 
+@@ -284,6 +289,7 @@ impl Builder {
+             net_report_config: self.net_report_config,
+             static_config,
+             configured_addrs: self.configured_addrs,
++            stateless_reset_secret: self.stateless_reset_secret,
+         };
+ 
+         let inner = socket::EndpointInner::bind(sock_opts)
+@@ -753,6 +759,32 @@ impl Builder {
+         self
+     }
+ 
++    /// Sets the stateless reset key, so a restarted endpoint can reset the connections of
++    /// its previous instance.
++    ///
++    /// When an endpoint stops without closing its connections (a crash, a killed process,
++    /// an evicted host), its peers only notice once their idle timeout expires. A QUIC
++    /// [stateless reset] lets the next instance tell them within a round trip: it answers a
++    /// packet for a connection it does not know with a reset, which the peer accepts only
++    /// if it was made with the key of the endpoint that issued the connection ID.
++    ///
++    /// By default a fresh random key is generated on every [`Builder::bind`], so resets only
++    /// work within the lifetime of one instance. Supplying the same key on every bind of an
++    /// endpoint (with the same [`SecretKey`] and reachable at the same addresses) lets a new
++    /// instance reset the connections of an earlier one. The key also seeds the validation
++    /// of connection IDs, because an endpoint only answers with a reset for connection IDs
++    /// it could have issued itself.
++    ///
++    /// Keep the key secret: anyone who knows it can reset this endpoint's connections. Use
++    /// a distinct key per endpoint, e.g. derived from the endpoint's [`SecretKey`] with a
++    /// key derivation function under an application-specific context.
++    ///
++    /// [stateless reset]: https://www.rfc-editor.org/rfc/rfc9000#section-10.3
++    pub fn stateless_reset_key(mut self, key: [u8; 32]) -> Self {
++        self.stateless_reset_secret = Some(StatelessResetSecret::new(key));
++        self
++    }
++
+     /// Specify the rustls cryptography to use for all TLS operations.
+     ///
+     /// This includes
+diff --git a/iroh/src/socket.rs b/iroh/src/socket.rs
+index 137f4ed..31f6206 100644
+--- a/iroh/src/socket.rs
++++ b/iroh/src/socket.rs
+@@ -82,7 +82,7 @@ use crate::{
+     },
+     tls::{
+         self,
+-        misc::{Blake3HmacKey, RustlsTokenKey},
++        misc::{Blake3HmacKey, RustlsTokenKey, StatelessResetSecret},
+     },
+ };
+ 
+@@ -196,6 +196,9 @@ pub(crate) struct Options {
+ 
+     /// Explicitly configured external addresses to advertise.
+     pub(crate) configured_addrs: BTreeSet<SocketAddr>,
++
++    /// Secret for stateless resets that work across restarts; random per bind if `None`.
++    pub(crate) stateless_reset_secret: Option<StatelessResetSecret>,
+ }
+ 
+ /// Inner state for an iroh [`crate::Endpoint`].
+@@ -889,6 +892,7 @@ impl EndpointInner {
+             net_report_config,
+             static_config,
+             configured_addrs,
++            stateless_reset_secret,
+         } = opts;
+ 
+         let address_lookup =
+@@ -1008,8 +1012,19 @@ impl EndpointInner {
+             span: span.clone(),
+         });
+ 
+-        let mut endpoint_config =
+-            noq::EndpointConfig::new(Arc::new(Blake3HmacKey::new(&mut rand::rng())));
++        let mut endpoint_config = match stateless_reset_secret {
++            None => noq::EndpointConfig::new(Arc::new(Blake3HmacKey::new(&mut rand::rng()))),
++            Some(secret) => {
++                // noq only resets packets whose CID passes `ConnectionIdGenerator::validate`,
++                // so the CID generator key must be stable across restarts as well.
++                let mut config = noq::EndpointConfig::new(Arc::new(secret.reset_key()));
++                let cid_key = secret.connection_id_key();
++                config.cid_generator(Arc::new(move || {
++                    Box::new(noq_proto::HashedConnectionIdGenerator::from_key(cid_key))
++                }));
++                config
++            }
++        };
+         // Setting this to false means that noq will ignore packets that have the QUIC fixed bit
+         // set to 0. The fixed bit is the 3rd bit of the first byte of a packet.
+         // For performance reasons and to not rewrite buffers we pass non-QUIC UDP packets straight
+@@ -2197,6 +2212,7 @@ mod tests {
+             net_report_config: Default::default(),
+             static_config,
+             configured_addrs: Default::default(),
++            stateless_reset_secret: None,
+         }
+     }
+ 
+@@ -2613,6 +2629,7 @@ mod tests {
+             net_report_config: Default::default(),
+             static_config,
+             configured_addrs: Default::default(),
++            stateless_reset_secret: None,
+         };
+         let sock = EndpointInner::bind(opts).await?;
+         Ok(sock)
+diff --git a/iroh/src/tls/misc.rs b/iroh/src/tls/misc.rs
+index 6a6fddd..b562620 100644
+--- a/iroh/src/tls/misc.rs
++++ b/iroh/src/tls/misc.rs
+@@ -123,3 +123,63 @@ impl crypto::HmacKey for Blake3HmacKey {
+         }
+     }
+ }
++
++/// Secret from which an endpoint derives the keys that make stateless resets work across
++/// restarts.
++///
++/// noq only sends a stateless reset for a short-header packet whose destination connection
++/// ID its CID generator recognises, and peers only accept a reset whose token was computed
++/// with the reset key of the endpoint that issued the CID. Both keys are therefore derived
++/// from this one secret, so they cannot get out of sync.
++#[derive(Clone)]
++pub(crate) struct StatelessResetSecret([u8; 32]);
++
++impl std::fmt::Debug for StatelessResetSecret {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.write_str("StatelessResetSecret(..)")
++    }
++}
++
++impl StatelessResetSecret {
++    pub(crate) fn new(secret: [u8; 32]) -> Self {
++        Self(secret)
++    }
++
++    /// The key that signs stateless reset tokens.
++    pub(crate) fn reset_key(&self) -> Blake3HmacKey {
++        Blake3HmacKey(blake3::derive_key(
++            "iroh 2026-10-21 stateless reset key",
++            &self.0,
++        ))
++    }
++
++    /// The key of the [`noq_proto::HashedConnectionIdGenerator`].
++    pub(crate) fn connection_id_key(&self) -> u64 {
++        let key = blake3::derive_key("iroh 2026-10-21 connection id key", &self.0);
++        u64::from_le_bytes(*key.first_chunk().expect("32 > 8"))
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use noq_proto::crypto::HmacKey;
++
++    use super::*;
++
++    #[test]
++    fn stateless_reset_secret_is_deterministic_and_domain_separated() {
++        let a = StatelessResetSecret::new([7; 32]);
++        let b = StatelessResetSecret::new([7; 32]);
++        let c = StatelessResetSecret::new([8; 32]);
++
++        let sign = |s: &StatelessResetSecret| {
++            let mut out = [0u8; 32];
++            s.reset_key().sign(b"cid", &mut out);
++            out
++        };
++        assert_eq!(sign(&a), sign(&b));
++        assert_ne!(sign(&a), sign(&c));
++        assert_eq!(a.connection_id_key(), b.connection_id_key());
++        assert_ne!(a.connection_id_key(), c.connection_id_key());
++    }
++}
+-- 
+2.54.0 (Apple Git-157)
+

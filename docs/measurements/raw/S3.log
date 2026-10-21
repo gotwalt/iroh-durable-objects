@@ -1,0 +1,12 @@
+## S3 start 2026-10-21T19:07:03.046406Z E=<E-S3> cmd=chat 
+local endpoint: ytg9cw1w3daj3n4n7mocdm7hama98b58eewun87b9kg8nhmii7ny
+target:         <E-S3> via explicit relay URL https://<E-S3>.iroh-do.example.com/
+-- connected in 1152.6 ms | relay https://<E-S3>.iroh-do.example.com/ | path RTT 1151.7 ms | 0-RTT: not attempted (no ticket)
+type lines; /status, /count, /log [n], /callback N, /quit
+<< echo: quiet line 1 19:07:06 (#1, total 1, yours 1) (281.8 ms)
+<< (uni) hello from <E-S3>: you are ytg9cw1w3daj3n4n7mocdm7hama98b58eewun87b9kg8nhmii7ny
+<< echo: quiet line 2 19:07:36 (#2, total 2, yours 2) (262.5 ms)
+<< echo: quiet line 3 19:08:06 (#3, total 3, yours 3) (525.0 ms)
+<< echo: quiet line 4 19:08:36 (#4, total 4, yours 4) (194.4 ms)
+<< echo: quiet line 5 19:09:06 (#5, total 5, yours 5) (233.5 ms)
+## S3 end 2026-10-21T19:09:36.468296Z rc=0

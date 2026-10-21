@@ -1,0 +1,39 @@
+[package]
+name = "iroh-relay-ingress"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Sans-io server side of the iroh relay protocol for an endpoint that serves its own relay URL"
+
+[dependencies]
+# `key` provides PublicKey parsing and strict ed25519 verification.
+iroh-base = { workspace = true, features = ["key"] }
+# Same version requirement as iroh-relay 1.4.0, which uses it for the
+# challenge's derive_key.
+blake3 = { version = "1.8.2", default-features = false }
+# The error crate iroh-base and iroh-relay use.
+n0-error = "1.0.1"
+# The rand_core of iroh-relay 1.4.0's `rand 0.10`, so callers can pass the same RNGs.
+rand_core = { version = "0.10", default-features = false }
+serde = { version = "1", default-features = false, features = ["derive", "std"] }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+proptest = { version = "1.11", default-features = false, features = ["std"] }
+postcard = { version = "1", features = ["use-std"] }
+serde_json = "1"
+hex = "0.4"
+rand = "0.10"
+
+# tests/conformance.rs: the stock iroh-relay client and iroh Endpoint against
+# a tokio WebSocket server wrapping IngressSession. Native only.
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+iroh-relay = { workspace = true, features = ["tls-ring"] }
+iroh = { workspace = true, features = ["tls-ring"] }
+iroh-dns = { version = "=1.4.0", default-features = false, features = ["tls-ring"] }
+noq-proto = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
+tokio-tungstenite = "0.29"
+futures-util = { version = "0.3", features = ["sink"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

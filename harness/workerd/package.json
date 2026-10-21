@@ -1,0 +1,12 @@
+{
+  "name": "iroh-do-workerd-harness",
+  "private": true,
+  "type": "module",
+  "description": "Deterministic eviction tests for the iroh-do Worker on Miniflare/workerd",
+  "scripts": {
+    "test:evict": "node evict-test.mjs"
+  },
+  "devDependencies": {
+    "miniflare": "5.20260908.0-alpha"
+  }
+}

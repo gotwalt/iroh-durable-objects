@@ -1,0 +1,21 @@
+[package]
+name = "iroh-restart-state-tests"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Tests for the upstream/ iroh restart-state patches (Builder::stateless_reset_key, Builder::tls_server_session_store)"
+
+# Standalone: not a member of the repository workspace.
+[workspace]
+
+[dependencies]
+
+[dev-dependencies]
+iroh = { version = "=1.4.0" }  # default features (tls-ring), native UDP
+rustls = { version = "0.23.46", default-features = false }
+tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "time", "net", "sync"] }
+n0-error = "1.0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[patch.crates-io]
+iroh = { path = "../iroh" }

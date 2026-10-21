@@ -1,0 +1,393 @@
+{
+ "S1": {
+  "objectId": "2ef123a0104dfb1b61a4ea0e8b6070b36d1057721c2a92de540840068a8bc07f",
+  "first": "2026-10-21T19:00:21Z",
+  "periodic_sum": {
+   "activeTime": 3664354,
+   "cpuTime": 354976,
+   "duration": 0.469037312,
+   "exceededCpuErrors": 0,
+   "exceededMemoryErrors": 0,
+   "fatalInternalErrors": 0,
+   "inboundWebsocketMsgCount": 0,
+   "outboundWebsocketMsgCount": 14,
+   "rowsRead": 47,
+   "rowsWritten": 27,
+   "storageDeletes": 0,
+   "storageReadUnits": 0,
+   "storageWriteUnits": 0,
+   "subrequests": 2
+  },
+  "max_mem": 7947505,
+  "inv_by_type": {
+   "http/success": {
+    "requests": 1,
+    "wall_us": 1452404
+   },
+   "hibernation/success": {
+    "requests": 11,
+    "wall_us": 2109423
+   },
+   "http/clientDisconnected": {
+    "requests": 1,
+    "wall_us": 1347248
+   },
+   "alarm/success": {
+    "requests": 1,
+    "wall_us": 68765
+   }
+  },
+  "mint_inv": {
+   "dimensions": {
+    "datetime": "2026-10-21T19:00:21Z",
+    "objectId": "2ef123a0104dfb1b61a4ea0e8b6070b36d1057721c2a92de540840068a8bc07f",
+    "status": "success",
+    "type": "http"
+   },
+   "quantiles": {
+    "cpuTimeP50": 66110,
+    "cpuTimeP99": 66110,
+    "wallTimeP50": 1452404,
+    "wallTimeP99": 1452404
+   },
+   "sum": {
+    "requests": 1,
+    "wallTime": 1452404
+   }
+  }
+ },
+ "S2": {
+  "objectId": "fcea776fb72eb573241e8a0567cb3db07029a3d9554e3cad3497046f9c2b74ca",
+  "first": "2026-10-21T19:02:49Z",
+  "periodic_sum": {
+   "activeTime": 5369909,
+   "cpuTime": 2587105,
+   "duration": 0.687348352,
+   "exceededCpuErrors": 0,
+   "exceededMemoryErrors": 0,
+   "fatalInternalErrors": 0,
+   "inboundWebsocketMsgCount": 0,
+   "outboundWebsocketMsgCount": 25,
+   "rowsRead": 98,
+   "rowsWritten": 31,
+   "storageDeletes": 0,
+   "storageReadUnits": 0,
+   "storageWriteUnits": 0,
+   "subrequests": 2
+  },
+  "max_mem": 36922440,
+  "inv_by_type": {
+   "http/success": {
+    "requests": 2,
+    "wall_us": 61764655
+   },
+   "hibernation/success": {
+    "requests": 20,
+    "wall_us": 3970963
+   },
+   "alarm/success": {
+    "requests": 1,
+    "wall_us": 42487
+   }
+  },
+  "mint_inv": {
+   "dimensions": {
+    "datetime": "2026-10-21T19:02:49Z",
+    "objectId": "fcea776fb72eb573241e8a0567cb3db07029a3d9554e3cad3497046f9c2b74ca",
+    "status": "success",
+    "type": "http"
+   },
+   "quantiles": {
+    "cpuTimeP50": 46506,
+    "cpuTimeP99": 46506,
+    "wallTimeP50": 1281188,
+    "wallTimeP99": 1281188
+   },
+   "sum": {
+    "requests": 1,
+    "wallTime": 1281188
+   }
+  }
+ },
+ "S3": {
+  "objectId": "0412858220d5d73bbb2cc33beca1a1d3f8d4cda3fb99894623dfce67f63f923d",
+  "first": "2026-10-21T19:06:55Z",
+  "periodic_sum": {
+   "activeTime": 156731849,
+   "cpuTime": 18916522,
+   "duration": 20.061676672,
+   "exceededCpuErrors": 0,
+   "exceededMemoryErrors": 0,
+   "fatalInternalErrors": 0,
+   "inboundWebsocketMsgCount": 0,
+   "outboundWebsocketMsgCount": 79,
+   "rowsRead": 56,
+   "rowsWritten": 34,
+   "storageDeletes": 0,
+   "storageReadUnits": 0,
+   "storageWriteUnits": 0,
+   "subrequests": 2
+  },
+  "max_mem": 38234723,
+  "inv_by_type": {
+   "http/success": {
+    "requests": 1,
+    "wall_us": 279465
+   },
+   "hibernation/success": {
+    "requests": 79,
+    "wall_us": 149522573
+   },
+   "http/clientDisconnected": {
+    "requests": 1,
+    "wall_us": 152488804
+   },
+   "alarm/success": {
+    "requests": 1,
+    "wall_us": 2111196
+   }
+  },
+  "mint_inv": {
+   "dimensions": {
+    "datetime": "2026-10-21T19:06:55Z",
+    "objectId": "0412858220d5d73bbb2cc33beca1a1d3f8d4cda3fb99894623dfce67f63f923d",
+    "status": "success",
+    "type": "http"
+   },
+   "quantiles": {
+    "cpuTimeP50": 31529,
+    "cpuTimeP99": 31529,
+    "wallTimeP50": 279465,
+    "wallTimeP99": 279465
+   },
+   "sum": {
+    "requests": 1,
+    "wallTime": 279465
+   }
+  }
+ },
+ "S4": {
+  "objectId": "d094590ba2c72a6a825c96b9827cc0879d65ca5b5b20c26e60c14d7b3765582f",
+  "first": "2026-10-21T19:09:48Z",
+  "periodic_sum": {
+   "activeTime": 75666459,
+   "cpuTime": 13847743,
+   "duration": 9.685306751999999,
+   "exceededCpuErrors": 0,
+   "exceededMemoryErrors": 0,
+   "fatalInternalErrors": 0,
+   "inboundWebsocketMsgCount": 0,
+   "outboundWebsocketMsgCount": 444,
+   "rowsRead": 20543,
+   "rowsWritten": 425,
+   "storageDeletes": 0,
+   "storageReadUnits": 0,
+   "storageWriteUnits": 0,
+   "subrequests": 2
+  },
+  "max_mem": 34821136,
+  "inv_by_type": {
+   "http/success": {
+    "requests": 1,
+    "wall_us": 1882081
+   },
+   "hibernation/success": {
+    "requests": 457,
+    "wall_us": 73634977
+   },
+   "http/clientDisconnected": {
+    "requests": 1,
+    "wall_us": 67472865
+   },
+   "alarm/success": {
+    "requests": 1,
+    "wall_us": 133110
+   }
+  },
+  "mint_inv": {
+   "dimensions": {
+    "datetime": "2026-10-21T19:09:48Z",
+    "objectId": "d094590ba2c72a6a825c96b9827cc0879d65ca5b5b20c26e60c14d7b3765582f",
+    "status": "success",
+    "type": "http"
+   },
+   "quantiles": {
+    "cpuTimeP50": 47578,
+    "cpuTimeP99": 47578,
+    "wallTimeP50": 1882081,
+    "wallTimeP99": 1882081
+   },
+   "sum": {
+    "requests": 1,
+    "wallTime": 1882081
+   }
+  }
+ },
+ "S5": {
+  "objectId": "aace582b0c3e1c4e0031e68b2c2e7580598ee5b21c66cafce4d2849a53bd1444",
+  "first": "2026-10-21T19:12:03Z",
+  "periodic_sum": {
+   "activeTime": 26486119,
+   "cpuTime": 12745364,
+   "duration": 3.390223232,
+   "exceededCpuErrors": 0,
+   "exceededMemoryErrors": 0,
+   "fatalInternalErrors": 0,
+   "inboundWebsocketMsgCount": 0,
+   "outboundWebsocketMsgCount": 16693,
+   "rowsRead": 46,
+   "rowsWritten": 27,
+   "storageDeletes": 0,
+   "storageReadUnits": 0,
+   "storageWriteUnits": 0,
+   "subrequests": 2
+  },
+  "max_mem": 34825234,
+  "inv_by_type": {
+   "http/success": {
+    "requests": 1,
+    "wall_us": 1297051
+   },
+   "http/clientDisconnected": {
+    "requests": 1,
+    "wall_us": 19458667
+   },
+   "hibernation/success": {
+    "requests": 12449,
+    "wall_us": 25943051
+   },
+   "alarm/success": {
+    "requests": 1,
+    "wall_us": 50820
+   }
+  },
+  "mint_inv": {
+   "dimensions": {
+    "datetime": "2026-10-21T19:12:03Z",
+    "objectId": "aace582b0c3e1c4e0031e68b2c2e7580598ee5b21c66cafce4d2849a53bd1444",
+    "status": "success",
+    "type": "http"
+   },
+   "quantiles": {
+    "cpuTimeP50": 43413,
+    "cpuTimeP99": 43413,
+    "wallTimeP50": 1297051,
+    "wallTimeP99": 1297051
+   },
+   "sum": {
+    "requests": 1,
+    "wallTime": 1297051
+   }
+  }
+ },
+ "S6": {
+  "objectId": "938f2874b9cad0528aed32eb48626b34d13c01c73b04c09ffc0e8d155fb925bf",
+  "first": "2026-10-21T19:13:28Z",
+  "periodic_sum": {
+   "activeTime": 8760578,
+   "cpuTime": 4165447,
+   "duration": 1.1213539840000002,
+   "exceededCpuErrors": 0,
+   "exceededMemoryErrors": 0,
+   "fatalInternalErrors": 0,
+   "inboundWebsocketMsgCount": 0,
+   "outboundWebsocketMsgCount": 36,
+   "rowsRead": 115,
+   "rowsWritten": 37,
+   "storageDeletes": 0,
+   "storageReadUnits": 0,
+   "storageWriteUnits": 0,
+   "subrequests": 2
+  },
+  "max_mem": 37446672,
+  "inv_by_type": {
+   "http/success": {
+    "requests": 2,
+    "wall_us": 81542410
+   },
+   "hibernation/success": {
+    "requests": 32,
+    "wall_us": 7493156
+   },
+   "alarm/success": {
+    "requests": 2,
+    "wall_us": 143923
+   }
+  },
+  "mint_inv": {
+   "dimensions": {
+    "datetime": "2026-10-21T19:13:28Z",
+    "objectId": "938f2874b9cad0528aed32eb48626b34d13c01c73b04c09ffc0e8d155fb925bf",
+    "status": "success",
+    "type": "http"
+   },
+   "quantiles": {
+    "cpuTimeP50": 38480,
+    "cpuTimeP99": 38480,
+    "wallTimeP50": 1016186,
+    "wallTimeP99": 1016186
+   },
+   "sum": {
+    "requests": 1,
+    "wallTime": 1016186
+   }
+  }
+ },
+ "S7": {
+  "objectId": "0992470f5680e991783ccae5f486ef577b2fe879e9c5f9ff1e097809a04dd124",
+  "first": "2026-10-21T19:15:52Z",
+  "periodic_sum": {
+   "activeTime": 24704963,
+   "cpuTime": 14849369,
+   "duration": 3.1622352640000004,
+   "exceededCpuErrors": 0,
+   "exceededMemoryErrors": 0,
+   "fatalInternalErrors": 0,
+   "inboundWebsocketMsgCount": 0,
+   "outboundWebsocketMsgCount": 105,
+   "rowsRead": 189,
+   "rowsWritten": 57,
+   "storageDeletes": 0,
+   "storageReadUnits": 0,
+   "storageWriteUnits": 0,
+   "subrequests": 2
+  },
+  "max_mem": 37250064,
+  "inv_by_type": {
+   "http/success": {
+    "requests": 1,
+    "wall_us": 1403457
+   },
+   "http/clientDisconnected": {
+    "requests": 6,
+    "wall_us": 10267434
+   },
+   "hibernation/success": {
+    "requests": 83,
+    "wall_us": 22821084
+   },
+   "alarm/success": {
+    "requests": 4,
+    "wall_us": 253067
+   }
+  },
+  "mint_inv": {
+   "dimensions": {
+    "datetime": "2026-10-21T19:15:52Z",
+    "objectId": "0992470f5680e991783ccae5f486ef577b2fe879e9c5f9ff1e097809a04dd124",
+    "status": "success",
+    "type": "http"
+   },
+   "quantiles": {
+    "cpuTimeP50": 46372,
+    "cpuTimeP99": 46372,
+    "wallTimeP50": 1403457,
+    "wallTimeP99": 1403457
+   },
+   "sum": {
+    "requests": 1,
+    "wallTime": 1403457
+   }
+  }
+ }
+}

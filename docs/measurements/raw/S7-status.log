@@ -1,0 +1,8 @@
+## S7-status start 2026-10-21T19:19:03.080821Z E=<E-S7> cmd=chat 
+local endpoint: q59aioo3sz9s6h5scynipmd1k4tua4iif3co8cbsoyqucqyfg6co
+target:         <E-S7> via explicit relay URL https://<E-S7>.iroh-do.example.com/
+-- connected in 441.3 ms | relay https://<E-S7>.iroh-do.example.com/ | path RTT 440.1 ms | 0-RTT: not attempted (no ticket)
+type lines; /status, /count, /log [n], /callback N, /quit
+<< {"id":"<E-S7>","state":"Active","wakes":7,"endpoint_builds":6,"connections":1,"bundle":"05a47e0ad7bd","since_wake_ms":154,"records":5} (18.6 ms)
+<< (uni) hello from <E-S7>: you are q59aioo3sz9s6h5scynipmd1k4tua4iif3co8cbsoyqucqyfg6co
+## S7-status end 2026-10-21T19:19:07.145889Z rc=0

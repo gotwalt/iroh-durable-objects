@@ -1,0 +1,32 @@
+{
+ "mode": "bench",
+ "bundle": "1927f9964c46380caf8cd01eb3eaa77eb7de780eddd1db5f233e38fabba3e8ac",
+ "samples": [
+  {
+   "label": "isolate up, module instantiated (router only)",
+   "t_ms": 1792610407805,
+   "wasm_bytes": 1703936,
+   "wasm_mib": 1.63
+  },
+  {
+   "label": "(a) after mint: DO constructed, no Endpoint",
+   "t_ms": 1792610407987,
+   "wasm_bytes": 1703936,
+   "wasm_mib": 1.63
+  },
+  {
+   "label": "(e) after bench --mb 16 (1 connection)",
+   "t_ms": 1792610418640,
+   "wasm_bytes": 5046272,
+   "wasm_mib": 4.81,
+   "exit": 0,
+   "out": "echoed 16.0 MiB in 10.21 s | upload done after 9.94 s | first byte back after 93.4 ms | 1.57 MiB/s each way (3.13 MiB/s aggregate)"
+  },
+  {
+   "label": "(e) +14 s: connection idle-closed, Warm/Cold",
+   "t_ms": 1792610432647,
+   "wasm_bytes": 5046272,
+   "wasm_mib": 4.81
+  }
+ ]
+}

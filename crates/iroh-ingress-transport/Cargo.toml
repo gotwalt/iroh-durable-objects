@@ -1,0 +1,15 @@
+[package]
+name = "iroh-ingress-transport"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "iroh custom transport whose paths are the peers connected to a relay ingress"
+
+[dependencies]
+iroh = { workspace = true, features = ["unstable-custom-transports"] }
+iroh-base = { workspace = true, features = ["key"] }
+noq-udp = { version = "=1.4.0", default-features = false }
+n0-watcher = "1"
+bytes = "1"
+tracing = "0.1"

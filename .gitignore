@@ -1,0 +1,19 @@
+/target
+/build
+/.demo
+.wrangler/
+node_modules/
+infra/.terraform/
+infra/*.tfstate*
+infra/*.tfvars
+!infra/examples/*.tfvars.example
+.dev.vars
+infra/*.auto.tfvars
+infra/.terraform.lock.hcl.bak
+upstream/**/target/
+# Never commit credentials or saved plans.
+*.tfplan
+.env
+.env.*
+*.pem
+*.key

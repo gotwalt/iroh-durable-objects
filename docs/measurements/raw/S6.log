@@ -1,0 +1,12 @@
+## S6 start 2026-10-21T19:14:03.072020Z E=<E-S6> cmd=listen --callback 20 --timeout 100
+local endpoint: hxd88awrt9ztgsu79t7q34e3fbsk4ej88b7j7i9bii47i6sb8suo
+target:         <E-S6> via explicit relay URL https://<E-S6>.iroh-do.example.com/
+-- connected in 577.7 ms | relay https://<E-S6>.iroh-do.example.com/ | path RTT 576.2 ms | 0-RTT: not attempted (no ticket)
+<< echo: hello (#1, total 1, yours 1) (115.9 ms)
+<< (uni) hello from <E-S6>: you are hxd88awrt9ztgsu79t7q34e3fbsk4ej88b7j7i9bii47i6sb8suo
+<< ok: callback in 20s (166.5 ms)
+-- chat connection closed; endpoint hxd88awrt9ztgsu79t7q34e3fbsk4ej88b7j7i9bii47i6sb8suo stays up and accepts notify/1
+-- note: our relay socket to the DO lives <= 60 s after our last send (V5); a dial-back must happen inside that window
+<< notify/1 from <E-S6>: callback from <E-S6> wakes=3 records=1 (186.9 ms before the scheduled time) [incoming handshake 64.7 ms]
+-- timeout
+## S6 end 2026-10-21T19:15:44.338270Z rc=0

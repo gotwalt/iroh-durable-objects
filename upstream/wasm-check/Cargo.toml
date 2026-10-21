@@ -1,0 +1,22 @@
+[package]
+name = "iroh-restart-state-wasm-check"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Build check: patched iroh on wasm32-unknown-unknown (no default features + unstable-custom-transports)"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+iroh = { version = "=1.4.0", default-features = false, features = ["unstable-custom-transports"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
+
+[patch.crates-io]
+iroh = { path = "../iroh" }
+
+# ring's getrandom 0.2 needs its JS backend on wasm32-unknown-unknown (as in crates/iroh-do-core).
+[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies]
+ring = { version = "0.17", features = ["wasm32_unknown_unknown_js"] }

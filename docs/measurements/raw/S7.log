@@ -1,0 +1,25 @@
+## S7 start 2026-10-21T19:16:03.070521Z E=<E-S7> cmd=ping 
+local endpoint: 7qhufio4uks91jgkmu7wy6ghaz61py11regnfrzh57yhp3b3k99y
+target:         <E-S7> via explicit relay URL https://<E-S7>.iroh-do.example.com/
+ping 1/1: echo 32 B ok | connect 698.7 ms | echo RTT 210.8 ms | path RTT 555.5 ms | relay https://<E-S7>.iroh-do.example.com/ | 0-RTT: not attempted (no ticket)
+## S7 end 2026-10-21T19:16:05.258215Z rc=0
+## S7 start 2026-10-21T19:16:33.067835Z E=<E-S7> cmd=ping 
+local endpoint: 4uuzjgffg5pztsu1ejm7ox1ntpna8x7qjohyw4euyth1k9aqoibo
+target:         <E-S7> via explicit relay URL https://<E-S7>.iroh-do.example.com/
+ping 1/1: echo 32 B ok | connect 343.4 ms | echo RTT 87.7 ms | path RTT 242.2 ms | relay https://<E-S7>.iroh-do.example.com/ | 0-RTT: not attempted (no ticket)
+## S7 end 2026-10-21T19:16:34.684560Z rc=0
+## S7 start 2026-10-21T19:17:03.085769Z E=<E-S7> cmd=ping 
+local endpoint: uybp7zgfu9m8u7qbjfe6tsc89udd3rxprfrd54q3ex6urxe1ebwo
+target:         <E-S7> via explicit relay URL https://<E-S7>.iroh-do.example.com/
+ping 1/1: echo 32 B ok | connect 391.7 ms | echo RTT 82.0 ms | path RTT 308.7 ms | relay https://<E-S7>.iroh-do.example.com/ | 0-RTT: not attempted (no ticket)
+## S7 end 2026-10-21T19:17:04.681470Z rc=0
+## S7 start 2026-10-21T19:17:33.068429Z E=<E-S7> cmd=ping 
+local endpoint: z1duci87yw7w9yrihm47a6bhks635ekuq3hxf9fray1mtqh6quao
+target:         <E-S7> via explicit relay URL https://<E-S7>.iroh-do.example.com/
+ping 1/1: echo 32 B ok | connect 420.7 ms | echo RTT 186.4 ms | path RTT 315.3 ms | relay https://<E-S7>.iroh-do.example.com/ | 0-RTT: not attempted (no ticket)
+## S7 end 2026-10-21T19:17:35.119967Z rc=0
+## S7 start 2026-10-21T19:18:03.080717Z E=<E-S7> cmd=ping 
+local endpoint: mtiady1nob6hu8xa1yfzzjj7xftkjey7xqnz1y31s3ea4cawwtzo
+target:         <E-S7> via explicit relay URL https://<E-S7>.iroh-do.example.com/
+ping 1/1: echo 32 B ok | connect 410.4 ms | echo RTT 92.7 ms | path RTT 324.5 ms | relay https://<E-S7>.iroh-do.example.com/ | 0-RTT: not attempted (no ticket)
+## S7 end 2026-10-21T19:18:05.443204Z rc=0

@@ -1,0 +1,48 @@
+{
+ "clock": "frozen",
+ "fix": false,
+ "bundle": "1927f9964c46380caf8cd01eb3eaa77eb7de780eddd1db5f233e38fabba3e8ac",
+ "phases": [
+  {
+   "name": "3 pings, each followed by 15 s idle (close, T_linger, teardown)",
+   "wall_s": 47.13,
+   "workerd_cpu_s": 0.62,
+   "setTimeout_calls": 56115,
+   "setTimeout0_calls": 56065,
+   "setTimeout0_fired": 56065,
+   "exit_codes": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "name": "chat: 20 lines at 0.3 s, then EOF and 15 s idle",
+   "wall_s": 21.802,
+   "workerd_cpu_s": 1.49,
+   "setTimeout_calls": 183977,
+   "setTimeout0_calls": 183902,
+   "setTimeout0_fired": 183893,
+   "exit_code": 0
+  },
+  {
+   "name": "quiet chat: 1 line, hold 40 s (keep-alives only), EOF, 15 s idle",
+   "wall_s": 56.104,
+   "workerd_cpu_s": 9.3,
+   "setTimeout_calls": 992570,
+   "setTimeout0_calls": 992514,
+   "setTimeout0_fired": 992506,
+   "exit_code": 0
+  },
+  {
+   "name": "bench --mb 4, then 15 s idle",
+   "wall_s": 16.95,
+   "workerd_cpu_s": 1.43,
+   "setTimeout_calls": 34535,
+   "setTimeout0_calls": 33326,
+   "setTimeout0_fired": 33325,
+   "exit_code": 0,
+   "result": "echoed 4.0 MiB in 0.52 s | upload done after 0.35 s | first byte back after 2.3 ms | 7.66 MiB/s each way (15.33 MiB/s aggregate)"
+  }
+ ]
+}

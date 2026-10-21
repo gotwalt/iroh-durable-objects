@@ -1,0 +1,6 @@
+## S5 start 2026-10-21T19:13:03.047052Z E=<E-S5> cmd=bench --mb 16
+local endpoint: ow5nhiejduyenz9f8cb9rbdaadpbw7xyn5ow6rite1mjwq9anoqy
+target:         <E-S5> via explicit relay URL https://<E-S5>.iroh-do.example.com/
+connected in 710.1 ms | relay https://<E-S5>.iroh-do.example.com/ | path RTT 709.2 ms | 0-RTT: not attempted (no ticket)
+echoed 16.0 MiB in 19.07 s | upload done after 18.68 s | first byte back after 111.1 ms | 0.84 MiB/s each way (1.68 MiB/s aggregate)
+## S5 end 2026-10-21T19:13:23.333272Z rc=0

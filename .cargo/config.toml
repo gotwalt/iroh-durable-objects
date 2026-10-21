@@ -1,0 +1,7 @@
+# Sign native binaries before `cargo run` / `cargo test` execute them, so the
+# macOS firewall doesn't prompt on every rebuild. See scripts/macos-sign-run.sh.
+[target.aarch64-apple-darwin]
+runner = "scripts/macos-sign-run.sh"
+
+[target.x86_64-apple-darwin]
+runner = "scripts/macos-sign-run.sh"

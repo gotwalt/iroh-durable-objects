@@ -1,0 +1,127 @@
+From 41fb2f088ecf442da40f82c2c083f8ca47cb44de Mon Sep 17 00:00:00 2001
+From: Aaron Gotwalt <gotwalt@gmail.com>
+Date: Wed, 21 Oct 2026 09:54:27 -0700
+Subject: [PATCH 2/2] feat(iroh): add Builder::tls_server_session_store
+
+Endpoints accept 0-RTT via stateful TLS 1.3 resumption: rustls keeps the
+session in ServerConfig::session_storage and hands the client an ID. iroh
+leaves that at rustls' default ServerSessionMemoryCache, created on every
+bind, so all tickets die with the Endpoint and a restarted endpoint (same
+SecretKey) rejects every 0-RTT attempt.
+
+Builder::tls_server_session_store(Arc<dyn StoresServerSessions>) installs
+a caller-owned store instead. max_early_data_size stays u32::MAX (QUIC
+allows only 0 or u32::MAX) and the ticketer stays NeverProducesTickets,
+so rustls keeps requiring stateful resumption for early data and keeps
+using the store's single-use take() for anti-replay. The docs spell out
+that take() must be atomic across every instance sharing the store.
+Without the call, behaviour is unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_015wVZzxfjCToSkbCjdePxVL
+---
+ iroh/src/endpoint.rs | 31 ++++++++++++++++++++++++++++++-
+ iroh/src/tls.rs      |  6 ++++++
+ 2 files changed, 36 insertions(+), 1 deletion(-)
+
+diff --git a/iroh/src/endpoint.rs b/iroh/src/endpoint.rs
+index 019d18a..a3676b3 100644
+--- a/iroh/src/endpoint.rs
++++ b/iroh/src/endpoint.rs
+@@ -154,6 +154,7 @@ pub struct Builder {
+     crypto_provider: Option<Arc<rustls::crypto::CryptoProvider>>,
+     configured_addrs: BTreeSet<SocketAddr>,
+     stateless_reset_secret: Option<StatelessResetSecret>,
++    tls_server_session_store: Option<Arc<dyn rustls::server::StoresServerSessions>>,
+ }
+ 
+ impl From<RelayMode> for Option<TransportConfig> {
+@@ -223,6 +224,7 @@ impl Builder {
+             crypto_provider: None,
+             configured_addrs: Default::default(),
+             stateless_reset_secret: None,
++            tls_server_session_store: None,
+         }
+     }
+ 
+@@ -244,11 +246,12 @@ impl Builder {
+             RustlsTokenKey::new(&mut rand::rng(), &crypto_provider)
+                 .ok_or_else(|| e!(BindError::InvalidCryptoProvider))?,
+         );
+-        let tls_config = tls::TlsConfig::new(
++        let mut tls_config = tls::TlsConfig::new(
+             secret_key.clone(),
+             self.max_tls_tickets,
+             crypto_provider.clone(),
+         );
++        tls_config.server_session_store = self.tls_server_session_store;
+         let static_config = StaticConfig {
+             server_config: tls_config.make_server_config(self.keylog)?,
+             client_config: tls_config.make_client_config(self.keylog)?,
+@@ -785,6 +788,32 @@ impl Builder {
+         self
+     }
+ 
++    /// Sets where the TLS server stores session resumption state, so 0-RTT keeps working
++    /// across restarts.
++    ///
++    /// Endpoints accept 0-RTT data from clients that resume an earlier session. Resumption is
++    /// stateful: the endpoint keeps the session state and gives the client only an ID. By
++    /// default this state lives in an in-memory cache of 256 sessions created on every
++    /// [`Builder::bind`], so a restarted endpoint rejects all earlier tickets and every client
++    /// falls back to a full handshake. A store that outlives the endpoint lets clients resume,
++    /// and send 0-RTT data, after the endpoint restarts with the same [`SecretKey`].
++    ///
++    /// The store is also what protects 0-RTT data against replay. rustls looks sessions up
++    /// with [`StoresServerSessions::take`], and accepts early data only for a session that
++    /// `take` returned. `take` must therefore remove the entry atomically, so that each
++    /// session is used at most once by any instance sharing the store. A store that cannot
++    /// guarantee this, such as an eventually consistent replica, makes 0-RTT data replayable.
++    /// Only share a store between instances of the same endpoint.
++    ///
++    /// [`StoresServerSessions::take`]: rustls::server::StoresServerSessions::take
++    pub fn tls_server_session_store(
++        mut self,
++        store: Arc<dyn rustls::server::StoresServerSessions>,
++    ) -> Self {
++        self.tls_server_session_store = Some(store);
++        self
++    }
++
+     /// Specify the rustls cryptography to use for all TLS operations.
+     ///
+     /// This includes
+diff --git a/iroh/src/tls.rs b/iroh/src/tls.rs
+index f031ba9..f2e3dc7 100644
+--- a/iroh/src/tls.rs
++++ b/iroh/src/tls.rs
+@@ -49,6 +49,8 @@ pub(crate) struct TlsConfig {
+     client_verifier: Arc<verifier::ClientCertificateVerifier>,
+     session_store: Arc<dyn rustls::client::ClientSessionStore>,
+     crypto_provider: Arc<rustls::crypto::CryptoProvider>,
++    /// Server-side session storage; rustls' default in-memory cache if `None`.
++    pub(crate) server_session_store: Option<Arc<dyn rustls::server::StoresServerSessions>>,
+ }
+ 
+ impl TlsConfig {
+@@ -66,6 +68,7 @@ impl TlsConfig {
+             )),
+             crypto_provider,
+             secret_key,
++            server_session_store: None,
+         }
+     }
+ 
+@@ -119,6 +122,9 @@ impl TlsConfig {
+             warn!("enabling SSLKEYLOGFILE for TLS pre-master keys");
+             crypto.key_log = Arc::new(rustls::KeyLogFile::new());
+         }
++        if let Some(store) = &self.server_session_store {
++            crypto.session_storage = store.clone();
++        }
+ 
+         // must be u32::MAX or 0 (the default). Any other value panics with QUIC
+         // This is specified in RFC 9001: https://www.rfc-editor.org/rfc/rfc9001#section-4.6.1
+-- 
+2.54.0 (Apple Git-157)
+

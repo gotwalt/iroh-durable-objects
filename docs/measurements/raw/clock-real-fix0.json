@@ -1,0 +1,48 @@
+{
+ "clock": "real",
+ "fix": false,
+ "bundle": "f13b10b735271ea304b5f62ad1489b1d6c0136dd30054a328ffa255fb101a2b4",
+ "phases": [
+  {
+   "name": "3 pings, each followed by 15 s idle (close, T_linger, teardown)",
+   "wall_s": 46.164,
+   "workerd_cpu_s": 0.15,
+   "setTimeout_calls": 60,
+   "setTimeout0_calls": 9,
+   "setTimeout0_fired": 9,
+   "exit_codes": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "name": "chat: 20 lines at 0.3 s, then EOF and 15 s idle",
+   "wall_s": 21.868,
+   "workerd_cpu_s": 0.09,
+   "setTimeout_calls": 94,
+   "setTimeout0_calls": 3,
+   "setTimeout0_fired": 3,
+   "exit_code": 0
+  },
+  {
+   "name": "quiet chat: 1 line, hold 40 s (keep-alives only), EOF, 15 s idle",
+   "wall_s": 56.098,
+   "workerd_cpu_s": 0.08,
+   "setTimeout_calls": 83,
+   "setTimeout0_calls": 6,
+   "setTimeout0_fired": 6,
+   "exit_code": 0
+  },
+  {
+   "name": "bench --mb 4, then 15 s idle",
+   "wall_s": 16.267,
+   "workerd_cpu_s": 0.88,
+   "setTimeout_calls": 1474,
+   "setTimeout0_calls": 54,
+   "setTimeout0_fired": 3,
+   "exit_code": 0,
+   "result": "echoed 4.0 MiB in 0.63 s | upload done after 0.44 s | first byte back after 2.4 ms | 6.38 MiB/s each way (12.75 MiB/s aggregate)"
+  }
+ ]
+}

@@ -1,0 +1,5 @@
+## S1 start 2026-10-21T19:00:28.154638Z E=<E-S1> cmd=ping 
+local endpoint: xxgkdr7poh1gwqg1mx1ceycpnd5tsqe3p8uc9ysbzgecwfta7a4o
+target:         <E-S1> via explicit relay URL https://<E-S1>.iroh-do.example.com/
+ping 1/1: echo 32 B ok | connect 458.8 ms | echo RTT 86.3 ms | path RTT 360.1 ms | relay https://<E-S1>.iroh-do.example.com/ | 0-RTT: not attempted (no ticket)
+## S1 end 2026-10-21T19:00:30.073840Z rc=0

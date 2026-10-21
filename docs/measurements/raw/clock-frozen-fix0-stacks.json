@@ -1,0 +1,53 @@
+{
+ "clock": "frozen",
+ "fix": false,
+ "stacks": {
+  "iroh_do.wasm.n0_future::time::wasm::set_timeout <- iroh_do.wasm.n0_future::time::wasm::sleep_impl <- iroh_do.wasm.n0_future::time::wasm::sleep_until <- iroh_do.wasm.n0_future::time::wasm::interval <- iroh_do.wasm.iroh::endpoint::Builder::bind::{{closure}}::{{closure}} <- iroh_do.wasm.<n0_future::task::wasm::SpawnFuture<Fut,T> as core::future::future::Future>::poll <- iroh_do.wasm.js_sys::futures::queue::Queue::new::{{closure}} <- iroh_do.wasm.wasm_bindgen::convert::closures::_::invoke": 1,
+  "iroh_do.wasm.n0_future::time::wasm::set_timeout <- iroh_do.wasm.n0_future::time::wasm::Sleep::reset <- iroh_do.wasm.<iroh::runtime::web::Timer as noq::runtime::AsyncTimer>::reset <- iroh_do.wasm.<tracing::instrument::Instrumented<T> as core::future::future::Future>::poll <- iroh_do.wasm.<core::pin::Pin<P> as core::future::future::Future>::poll <- iroh_do.wasm.js_sys::futures::queue::Queue::new::{{closure}} <- iroh_do.wasm.wasm_bindgen::convert::closures::_::invoke <- iroh_do.wasm.wasm_bindgen::convert::closures::_::invoke::h0867cab8fb676da6 externref shim multivalue shim": 22,
+  "iroh_do.wasm.__externref_table_dealloc <- iroh_do.wasm.n0_future::time::wasm::set_timeout <- iroh_do.wasm.n0_future::time::wasm::Sleep::reset <- iroh_do.wasm.<iroh::runtime::web::Timer as noq::runtime::AsyncTimer>::reset <- iroh_do.wasm.<tracing::instrument::Instrumented<T> as core::future::future::Future>::poll <- iroh_do.wasm.<core::pin::Pin<P> as core::future::future::Future>::poll <- iroh_do.wasm.js_sys::futures::queue::Queue::new::{{closure}} <- iroh_do.wasm.wasm_bindgen::convert::closures::_::invoke": 1354
+ },
+ "bundle": "f13b10b735271ea304b5f62ad1489b1d6c0136dd30054a328ffa255fb101a2b4",
+ "phases": [
+  {
+   "name": "3 pings, each followed by 15 s idle (close, T_linger, teardown)",
+   "wall_s": 47.215,
+   "workerd_cpu_s": 0.61,
+   "setTimeout_calls": 24947,
+   "setTimeout0_calls": 24896,
+   "setTimeout0_fired": 24896,
+   "exit_codes": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "name": "chat: 20 lines at 0.3 s, then EOF and 15 s idle",
+   "wall_s": 21.84,
+   "workerd_cpu_s": 1.76,
+   "setTimeout_calls": 153568,
+   "setTimeout0_calls": 153496,
+   "setTimeout0_fired": 153486,
+   "exit_code": 0
+  },
+  {
+   "name": "quiet chat: 1 line, hold 40 s (keep-alives only), EOF, 15 s idle",
+   "wall_s": 56.117,
+   "workerd_cpu_s": 15,
+   "setTimeout_calls": 505493,
+   "setTimeout0_calls": 505438,
+   "setTimeout0_fired": 505431,
+   "exit_code": 0
+  },
+  {
+   "name": "bench --mb 4, then 15 s idle",
+   "wall_s": 16.336,
+   "workerd_cpu_s": 1.11,
+   "setTimeout_calls": 5582,
+   "setTimeout0_calls": 4393,
+   "setTimeout0_fired": 4390,
+   "exit_code": 0,
+   "result": "echoed 4.0 MiB in 0.73 s | upload done after 0.49 s | first byte back after 2.7 ms | 5.44 MiB/s each way (10.89 MiB/s aggregate)"
+  }
+ ]
+}
