@@ -294,3 +294,9 @@ total 4 files changed, 149 insertions(+), 5 deletions(-)   noq / noq-proto: 0
 * **Upstreaming.** The two commits are stacked but logically independent, and each builds on its own. For the
   upstream PR, tests 1 and 2 would move into `iroh/src/endpoint.rs`'s test module (they use only
   public API).
+
+## License
+
+`iroh/` and the patches are derived from iroh and keep its license, MIT OR
+Apache-2.0 (`iroh/LICENSE-MIT`, `iroh/LICENSE-APACHE`). The rest of this
+repository is MIT (`../LICENSE`).

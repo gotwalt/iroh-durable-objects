@@ -438,6 +438,8 @@ impl State {
             Some(b) => b.to_path_buf(),
             None => dirs::data_dir()
                 .ok_or_else(|| anyerr!("no user data directory; pass --state-dir"))?
+                // The binary was called iroh-do-demo when this path was chosen;
+                // it stays, so existing member keys keep working.
                 .join("iroh-do-demo"),
         };
         let dir = base

@@ -17,6 +17,10 @@ that reviews refer to; `docs/design-notes/` records every change to it.
 - **Design changes need a design note** in `docs/design-notes/`, numbered
   next in sequence, and `docs/design.md` must be updated to match. Changes
   that touch a principle in `docs/spec.md` §1 need the user's review first.
+- **Releases belong to the user.** `just release VERSION` signs with the
+  user's Developer ID, notarizes, tags and publishes to GitHub. Run it only
+  when asked; `just release-dry VERSION` builds and signs without publishing.
+  The package `iroh-do-demo` builds the binary `iroh-do-chat`.
 - **Production belongs to the user.** Do not run `tofu apply`, `just up` or
   `just down` against Cloudflare without the user's approval for that run.
   Save the plan with `-out` and show it first. Credentials come from the

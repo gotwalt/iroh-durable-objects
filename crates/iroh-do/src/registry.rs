@@ -126,7 +126,7 @@ pub fn page(entries: &[Entry]) -> String {
             let _ = writeln!(
                 out,
                 "<tr><td>{label}</td><td><code>{id}</code> <button data-copy=\"{id}\">copy</button></td>\
-                 <td>{}</td><td><code>iroh-do-demo chat {id}</code></td>\
+                 <td>{}</td><td><code>iroh-do-chat {id}</code></td>\
                  <td><button data-status=\"{id}\">show</button> <span class=status></span></td></tr>",
                 utc(e.minted_at)
             );

@@ -34,7 +34,7 @@ minted_at INTEGER)`. Adding the class is a new migration step (`v2`,
 
 Server-rendered HTML from the router, no client-side framework, no external
 assets. One row per endpoint, newest first: label, `E` with a copy button,
-mint time, and the command `iroh-do-demo chat <E>`. Rendering wakes only the
+mint time, and the command `iroh-do-chat <E>`. Rendering wakes only the
 registry.
 
 Live status (state, members present, records) is fetched per row on demand

@@ -6,7 +6,7 @@ extends note 007.
 ## Decision
 
 Each endpoint is a small chat room: "me and my friends", not a public channel.
-Members run `iroh-do-demo chat <E>`, see scrollback, and exchange messages
+Members run `iroh-do-chat <E>`, see scrollback, and exchange messages
 live. Messages are stored in the object's SQLite log, so scrollback survives
 hibernation, eviction and redeploys.
 
@@ -156,7 +156,7 @@ resetting the object's state.
 
 ## Client
 
-`iroh-do-demo chat <E> [--nick NAME]`: a terminal UI (ratatui) on stock
+`iroh-do-chat <E> [--nick NAME]`: a terminal UI (ratatui) on stock
 iroh, default features, home relay set to the room. A persistent key (so nick
 and membership survive client restarts) and the last seen `seq` are stored per
 room and nick under the user's data directory, so clients with different nicks

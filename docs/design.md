@@ -279,7 +279,7 @@ making the room its home relay; see [The chat room](#the-chat-room).
 Each endpoint is a small chat room (`iroh-do/room/1`,
 `crates/iroh-do-core/src/room.rs`; protocol in
 [`design-notes/008`](design-notes/008-chat-room.md)). Members run
-`iroh-do-demo chat <E>`. Messages, actions, joins, parts and nick changes are
+`iroh-do-chat <E>`. Messages, actions, joins, parts and nick changes are
 stored in the `log` table, so scrollback survives hibernation, eviction and
 redeploys.
 
@@ -356,7 +356,7 @@ a registry object (class `registry`, one instance). An endpoint minted
 before the registry existed registers itself once, on its next wake.
 
 `GET https://admin.<zone>/` renders the list as plain HTML, newest first, with
-the `iroh-do-demo chat <E>` command for each room; `GET /endpoints.json`
+the `iroh-do-chat <E>` command for each room; `GET /endpoints.json`
 returns the same data. Rendering wakes only the registry. A row's live status
 (`GET /status/<E>`) is fetched only on request, because it wakes that room.
 The list is public: in this deployment, endpoint ids are not secret, and

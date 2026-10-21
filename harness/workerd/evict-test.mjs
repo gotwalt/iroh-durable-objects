@@ -2,7 +2,7 @@
 //
 //   node harness/workerd/evict-test.mjs
 //
-// Uses the bundle in build/worker/ and the peer at target/debug/iroh-do-demo
+// Uses the bundle in build/worker/ and the peer at target/debug/iroh-do-chat
 // (override with IROH_DO_DEMO). Miniflare is pinned in package.json to the
 // version wrangler 4.130.0 bundles. Instead of waiting ~10 s for real
 // hibernation, the test forces it with
@@ -30,7 +30,7 @@ import { Miniflare } from "miniflare";
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..", "..");
 const bundle = join(repo, "build", "worker");
-const demoBin = process.env.IROH_DO_DEMO ?? join(repo, "target", "debug", "iroh-do-demo");
+const demoBin = process.env.IROH_DO_DEMO ?? join(repo, "target", "debug", "iroh-do-chat");
 const port = Number(process.env.PORT ?? 8817);
 const ADMIN_TOKEN = "evict-test-token";
 const SCRIPT = "iroh-do-chat";
@@ -118,7 +118,7 @@ const mf = new Miniflare({
   ],
 });
 
-/** Run `iroh-do-demo <args…> E` (driven over stdin); resolve lines matching a predicate. */
+/** Run `iroh-do-chat <args…> E` (driven over stdin); resolve lines matching a predicate. */
 function startDemo(E, ...args) {
   const child = spawn(demoBin, ["--local", "--local-port", String(port), ...args, E], {
     stdio: ["pipe", "pipe", "pipe"],

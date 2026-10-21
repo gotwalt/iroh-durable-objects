@@ -13,7 +13,7 @@ root := justfile_directory()
 bundle_dir := root / "build/worker"
 demo_dir := root / ".demo"
 infra := root / "infra"
-demo_bin := root / "target/release/iroh-do-demo"
+demo_bin := root / "target/release/iroh-do-chat"
 # Signs the native binary before running it so the macOS firewall does not prompt.
 run := root / "scripts/macos-sign-run.sh"
 local_port := env_var_or_default("LOCAL_PORT", "8787")
@@ -115,7 +115,7 @@ demo *ARGS: build-demo
     exec "{{run}}" "{{demo_bin}}" lifecycle "$(cat "{{demo_dir}}/endpoint")" {{ARGS}}
 
 # Each nick is a separate member with its own key, so several clients can run
-# on one machine. Extra ARGS go to `iroh-do-demo chat` (e.g. --say, --listen-for).
+# on one machine. Extra ARGS go to `iroh-do-chat chat` (e.g. --say, --listen-for).
 # LOCAL=1 joins a room in `just local-up`'s workerd, on LOCAL_PORT or local-up's port.
 #
 # Join room E as NICK (default $USER).
@@ -134,7 +134,7 @@ chat E NICK=env_var_or_default("USER", "") *ARGS: build-demo
     fi
     exec "{{run}}" "{{demo_bin}}" ${net[@]+"${net[@]}"} chat "$room" ${nick:+--nick "$nick"} "$@"
 
-# Run any iroh-do-demo subcommand against .demo/endpoint, e.g. `just cli ping`, `just cli chat`.
+# Run any iroh-do-chat subcommand against .demo/endpoint, e.g. `just cli ping`, `just cli chat`.
 cli CMD *ARGS: build-demo
     #!/usr/bin/env bash
     set -euo pipefail
@@ -277,6 +277,14 @@ _local-stop PIDFILE:
         kill -KILL -- "-$pid" 2>/dev/null || true
     fi
     rm -f "{{PIDFILE}}"
+
+# Build, sign, notarize, tag and publish iroh-do-chat VERSION for macOS (scripts/release-macos.sh).
+release VERSION:
+    "{{root}}/scripts/release-macos.sh" {{quote(VERSION)}}
+
+# Build, sign and package iroh-do-chat VERSION into dist/, without notarizing or publishing.
+release-dry VERSION:
+    "{{root}}/scripts/release-macos.sh" {{quote(VERSION)}} --dry
 
 # tofu plan; prints "zero diff" when there are no changes, as expected after `up`.
 plan:

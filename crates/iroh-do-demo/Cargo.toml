@@ -7,8 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+# The package keeps its original name; the distributed binary is iroh-do-chat.
 [[bin]]
-name = "iroh-do-demo"
+name = "iroh-do-chat"
 path = "src/main.rs"
 
 [dependencies]

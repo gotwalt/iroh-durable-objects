@@ -1,5 +1,9 @@
-//! `iroh-do-demo`: a command-line peer for an iroh endpoint hosted in a
-//! Cloudflare Durable Object.
+//! `iroh-do-chat`: a command-line peer for an iroh endpoint hosted in a
+//! Cloudflare Durable Object. The package is `iroh-do-demo`; the binary it
+//! builds is `iroh-do-chat`.
+//!
+//! `iroh-do-chat <E>` joins the chat room `E` (shorthand for
+//! `iroh-do-chat chat <E>`); the other subcommands are diagnostics.
 //!
 //! It is an ordinary iroh 1.4.0 application: default features, `presets::N0`,
 //! default address lookup. It must not need anything a stock iroh peer would
@@ -42,6 +46,8 @@ use crate::{
 };
 
 const AFTER_HELP: &str = "\
+`iroh-do-chat <E>` is short for `iroh-do-chat chat <E>`.
+
 E is the object's EndpointId in its 52-character z-base-32 form, as printed by
 `just mint` and used in the object's hostname. Hex ids are rejected.
 
@@ -63,7 +69,8 @@ the missing hook.";
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "iroh-do-demo",
+    name = "iroh-do-chat",
+    bin_name = "iroh-do-chat",
     version,
     about = "Stock iroh 1.4 peer for an iroh endpoint hosted in a Cloudflare Durable Object",
     after_help = AFTER_HELP
@@ -176,7 +183,7 @@ async fn main() -> ExitCode {
         )
         .with_writer(std::io::stderr)
         .init();
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(with_chat_shorthand(std::env::args_os().collect()));
     match run(cli).await {
         Ok(code) => code,
         Err(err) => {
@@ -184,6 +191,38 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Inserts the `chat` subcommand when the first positional argument is an
+/// EndpointId, so `iroh-do-chat <E> --nick ana` joins room `E`.
+fn with_chat_shorthand(mut args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    // Options that take a value as the next argument; their values are not positionals.
+    const TAKES_VALUE: &[&str] = &[
+        "--relay-url",
+        "--local-port",
+        "--nick",
+        "--state-dir",
+        "--say",
+        "--listen-for",
+    ];
+    let mut i = 1;
+    while i < args.len() {
+        let Some(arg) = args[i].to_str() else {
+            return args;
+        };
+        if arg == "--" {
+            return args;
+        }
+        if arg.starts_with('-') {
+            i += if TAKES_VALUE.contains(&arg) { 2 } else { 1 };
+            continue;
+        }
+        if net::is_z32_endpoint_id(arg) {
+            args.insert(1, "chat".into());
+        }
+        return args;
+    }
+    args
 }
 
 async fn run(cli: Cli) -> Result<ExitCode> {
@@ -693,4 +732,39 @@ async fn bench(ep: &Endpoint, target: &Target, mb: u32) -> Result<()> {
 /// Parses `/status` from a ctl reply, with context.
 pub(crate) fn expect_status(reply: &str) -> Result<Status> {
     Status::parse(reply).map_err(|err| anyerr!("unexpected /status reply {reply:?}: {err}"))
+}
+
+#[cfg(test)]
+mod shorthand_tests {
+    use super::with_chat_shorthand;
+
+    const E: &str = "84xjormz6935pd1rwzr9bz1qix1tgshen66h8qx5yutsfr41qu8y";
+
+    fn run(args: &[&str]) -> Vec<String> {
+        with_chat_shorthand(args.iter().map(|a| (*a).into()).collect())
+            .into_iter()
+            .map(|a| a.into_string().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn endpoint_id_first_means_chat() {
+        assert_eq!(run(&["x", E]), ["x", "chat", E]);
+        assert_eq!(
+            run(&["x", E, "--nick", "ana"]),
+            ["x", "chat", E, "--nick", "ana"]
+        );
+        assert_eq!(
+            run(&["x", "--nick", "ana", "--local", E]),
+            ["x", "chat", "--nick", "ana", "--local", E]
+        );
+    }
+
+    #[test]
+    fn subcommands_are_left_alone() {
+        assert_eq!(run(&["x", "ping", E]), ["x", "ping", E]);
+        assert_eq!(run(&["x", "chat", E]), ["x", "chat", E]);
+        assert_eq!(run(&["x", "--help"]), ["x", "--help"]);
+        assert_eq!(run(&["x", "notanid"]), ["x", "notanid"]);
+    }
 }

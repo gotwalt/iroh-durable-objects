@@ -42,6 +42,11 @@ pub fn parse_endpoint_id(s: &str) -> Result<EndpointId> {
     })
 }
 
+/// Whether `s` is an EndpointId in z-base-32 form (52 characters).
+pub fn is_z32_endpoint_id(s: &str) -> bool {
+    s.len() == 52 && PublicKey::from_z32(s).is_ok()
+}
+
 /// How the demo reaches the DO.
 #[derive(Debug, Clone)]
 pub struct Target {

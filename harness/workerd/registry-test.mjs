@@ -87,7 +87,7 @@ try {
   const page = await admin("/");
   const html = await page.text();
   check("page served as HTML", page.status === 200 && page.headers.get("content-type")?.startsWith("text/html"));
-  check("page lists both endpoints with the chat command", html.includes(`iroh-do-demo chat ${a}`) && html.includes(`iroh-do-demo chat ${b}`));
+  check("page lists both endpoints with the chat command", html.includes(`iroh-do-chat ${a}`) && html.includes(`iroh-do-chat ${b}`));
   check("label is escaped", !html.includes(evil) && !html.includes("<img") &&
     html.includes("&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;&lt;img src=x onerror=alert(1)&gt;"));
   check("page has only its own script", html.split("<script>").length === 2);

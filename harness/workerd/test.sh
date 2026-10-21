@@ -7,7 +7,7 @@
 #   1. router: a bad or missing admin token gets 401; unminted, non-z32 and hex
 #      labels get 404; /ping and /generate_204 are answered by the router;
 #   2. mint returns {id, relay_url, published} with a 52-char z32 id;
-#   3. iroh-do-demo (stock iroh 1.4, default features) reaches
+#   3. iroh-do-chat (stock iroh 1.4, default features) reaches
 #      http://<E>.localhost:<port>/: echo/1 round trips, ctl/1 lines, /status
 #      and the object's unprompted uni stream;
 #   4. `lifecycle`: the object closes the idle connection, hibernates (the
@@ -47,7 +47,7 @@ if [[ $build -eq 1 || ! -f "$repo/build/worker/index_bg.wasm" ]]; then
   "$repo/crates/iroh-do/build-worker.sh"
 fi
 (cd "$repo" && cargo build -q -p iroh-do-demo)
-demo="$repo/target/debug/iroh-do-demo"
+demo="$repo/target/debug/iroh-do-chat"
 
 token="$(openssl rand -hex 24)"
 # .dev.vars is gitignored; it carries the local ADMIN_TOKEN secret.

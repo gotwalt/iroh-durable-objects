@@ -12,7 +12,7 @@ members = [
 [workspace.package]
 edition = "2024"
 rust-version = "1.91"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 
 [workspace.dependencies]
 # Exact pins (spec §12.1, R3). Recorded in docs/verification.md.
@@ -27,3 +27,8 @@ panic = "abort"
 lto = true
 opt-level = "z"
 codegen-units = 1
+
+# The release profile above optimises the wasm Worker for size. The native
+# client is optimised for speed.
+[profile.release.package.iroh-do-demo]
+opt-level = 3

@@ -7,6 +7,21 @@ relay URL, and connect. The object serves that relay URL itself, runs QUIC
 end to end with the peer, keeps its state in its own SQLite database, and
 hibernates when nobody is talking to it.
 
+## Install the chat client
+
+macOS builds of `iroh-do-chat` (universal, signed and notarized) are on the
+[releases page](https://github.com/gotwalt/iroh-durable-objects/releases):
+
+```sh
+curl -LO https://github.com/gotwalt/iroh-durable-objects/releases/latest/download/iroh-do-chat-<version>-macos-universal.zip
+unzip iroh-do-chat-<version>-macos-universal.zip
+mv iroh-do-chat-<version>-macos-universal/iroh-do-chat /usr/local/bin/
+```
+
+Then join a room with `iroh-do-chat <E> --nick <name>`. To build it from
+source instead: `cargo build --release -p iroh-do-demo` produces
+`target/release/iroh-do-chat`.
+
 ## The problem
 
 An iroh endpoint that other people dial needs to be reachable at any time and
@@ -60,7 +75,7 @@ discovery, passed all 26 checks:
 
 The same run passes against local workerd, with no Cloudflare account.
 
-Each endpoint is also a small chat room. `iroh-do-demo chat <E>` opens a
+Each endpoint is also a small chat room. `iroh-do-chat <E>` opens a
 terminal client: scrollback from the object's SQLite, live messages from the
 other members, `/me`, `/nick`, `/who`. Members do not hold QUIC connections
 between messages, so a room hibernates as soon as a conversation pauses, and
@@ -154,7 +169,7 @@ Join the room, and give `E` to whoever you want to chat with:
 ```sh
 just chat <E>                               # nick = $USER
 just chat <E> ana                           # as ana: a separate member, its own key
-iroh-do-demo chat <E> --nick ana            # anyone else, with only E
+iroh-do-chat <E> --nick ana                 # anyone else, with only E
 ```
 
 Minted endpoints are listed at `https://admin.<zone>/`. `just cli <command>`
@@ -176,10 +191,15 @@ crates/iroh-relay-ingress/      server side of the iroh relay protocol, sans-io
 crates/iroh-ingress-transport/  iroh custom transport whose paths are peers' relay sockets
 crates/iroh-do-core/            object lifecycle, Endpoint build and teardown, demo protocols
 crates/iroh-do/                 the Worker (script `iroh-do-chat`): router, `room` and `registry` Durable Objects (wasm32)
-crates/iroh-do-demo/            demo peer CLI (stock iroh)
+crates/iroh-do-demo/            the iroh-do-chat client and diagnostics CLI (stock iroh)
 harness/native/                 tokio host for the same code, with tests against stock peers
 harness/workerd/                local workerd config and Miniflare eviction tests
 infra/                          OpenTofu module for the Cloudflare deployment
 docs/                           design, decision log, verification, measurements
 upstream/                       proposed iroh patch, reference only
 ```
+
+## License
+
+MIT; see [`LICENSE`](LICENSE). `upstream/iroh/` is a copy of iroh and keeps
+iroh's own license, MIT OR Apache-2.0.

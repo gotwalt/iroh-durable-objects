@@ -17,7 +17,7 @@
 // run in which the prelude makes `globalThis.setTimeout` read-only so the bundle cannot install
 // its fix, which must spin. The control proves the test detects the bug; SKIP_CONTROL=1 skips it.
 //
-// Uses the peer at target/debug/iroh-do-demo (override with IROH_DO_DEMO).
+// Uses the peer at target/debug/iroh-do-chat (override with IROH_DO_DEMO).
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -28,7 +28,7 @@ import { Miniflare } from "miniflare";
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..", "..");
 const bundle = join(repo, "build", "worker");
-const demoBin = process.env.IROH_DO_DEMO ?? join(repo, "target", "debug", "iroh-do-demo");
+const demoBin = process.env.IROH_DO_DEMO ?? join(repo, "target", "debug", "iroh-do-chat");
 const port = Number(process.env.PORT ?? 8837);
 const ADMIN_TOKEN = "clock-test-token";
 // Limits for the fixed run. The real-clock baseline of this workload is about 0.1 s of

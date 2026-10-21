@@ -71,7 +71,7 @@ through the environment and never prints them.
 export CLOUDFLARE_API_TOKEN=...
 just up       # build, tofu init + apply, wait until the certificate serves
 just mint     # POST https://admin.iroh-do.<zone>/mint, writes E to .demo/endpoint
-just demo     # iroh-do-demo lifecycle <E>
+just demo     # iroh-do-chat lifecycle <E>
 just plan     # should report zero diff
 just down     # typed confirmation, then tofu destroy (deletes every identity)
 ```
