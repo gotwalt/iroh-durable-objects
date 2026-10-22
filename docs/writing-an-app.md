@@ -26,7 +26,7 @@ follows the code.
 ### The crate
 
 An app is an ordinary library crate that builds natively and for
-`wasm32-unknown-unknown`. `apps/echo/Cargo.toml`:
+`wasm32-unknown-unknown`. `examples/echo/app/Cargo.toml`:
 
 ```toml
 [dependencies]
@@ -42,7 +42,7 @@ a path or git dependency on `iroh-do`, and must pin iroh to `=1.4.0` as well.
 
 ### The handler
 
-`apps/echo/src/lib.rs` copies `Echo` from iroh 1.4.0 `examples/echo.rs` with
+`examples/echo/app/src/lib.rs` copies `Echo` from iroh 1.4.0 `examples/echo.rs` with
 only `pub` added:
 
 ```rust
@@ -101,20 +101,20 @@ runs that app on every wake. `join_hint` is the command the endpoint list at
 ### Adding it to a deployment
 
 A deployment is one Worker script built from a `cdylib` crate that invokes
-`iroh_do::worker!` once. This repository's is `crates/iroh-do-worker`:
+`iroh_do::worker!` once. This repository's is `examples/deployment`:
 
 ```rust
 iroh_do::worker! { apps: [iroh_do_chat_app::ChatApp, iroh_do_echo::EchoApp] }
 ```
 
-To add an app, add its crate to `crates/iroh-do-worker/Cargo.toml` and its
+To add an app, add its crate to `examples/deployment/Cargo.toml` and its
 type to the list. All endpoints of a deployment share one script, one Durable
 Object class (`endpoint`) and the namespace `https://<E>.<zone>/`; the app is
 a property of each endpoint. Minting without an app name uses the first.
 
 A single-app deployment can put the `worker!` line in its own crate. That
 crate must be a `cdylib` and depend directly on `worker` and `wasm-bindgen`
-at the pinned versions, as `crates/iroh-do-worker/Cargo.toml` does:
+at the pinned versions, as `examples/deployment/Cargo.toml` does:
 
 ```toml
 [lib]
@@ -129,18 +129,18 @@ wasm-bindgen = "=0.2.129"
 Off wasm32 the macro expands to nothing, so the crate still builds natively.
 The expansion defines the classes `endpoint` and `registry` and the `fetch`
 handler; the Worker configuration binds them as `ENDPOINTS` and `REGISTRY`
-(`crates/iroh-do-worker/BUILD.md`, "Bindings"). `build-worker.sh` in the same
+(`deploy/BUILD.md`, "Bindings"). `build-worker.sh` in the same
 directory runs `worker-build` 0.8.7 in the crate's directory; copy it.
 
 ## 2. Testing natively against stock peers
 
-`harness/native` (`iroh-do-harness`) hosts the same node under tokio and
+`crates/iroh-do-harness` (`iroh-do-harness`) hosts the same node under tokio and
 serves the relay protocol for each object it mints, so stock iroh 1.4.0 peers
 connect over loopback. A `DoObject` keeps what a Durable Object keeps
 (identity, scheduled work, SQLite, sockets) and drops the rest on
 `hibernate()` or `evict()`.
 
-From `harness/native/tests/library.rs`, trimmed:
+From `crates/iroh-do-harness/tests/library.rs`, trimmed:
 
 ```rust
 #[tokio::test(flavor = "multi_thread")]
@@ -225,7 +225,7 @@ JSON is at `admin.localhost:<port>/status/<E>` (`"app":"echo"`, `"state"`,
 ## 4. Deploying
 
 Deploying is the deployment owner's step: it changes live Cloudflare
-resources. The commands, from the `justfile` and `infra/README.md`:
+resources. The commands, from the `justfile` and `deploy/tofu/README.md`:
 
 ```sh
 just up                  # build the bundle; tofu init + apply; wait for the certificate
@@ -233,11 +233,11 @@ just mint echo [LABEL]   # POST https://admin.<zone>/mint {"app":"echo"}; prints
 iroh-do-echo-client <E>  # or: just echo <E>
 ```
 
-`just up` needs `CLOUDFLARE_API_TOKEN` and an `infra/<name>.auto.tfvars`;
-`infra/README.md` lists the token's permissions. Deploying any app redeploys
+`just up` needs `CLOUDFLARE_API_TOKEN` and an `examples/deployment/infra/<name>.auto.tfvars`;
+`deploy/tofu/README.md` lists the token's permissions. Deploying any app redeploys
 the whole script, which restarts every live object of every app. In
 production the object publishes its pkarr record at mint, so a peer needs
-only `E`: `apps/echo-client` binds `Endpoint::bind(presets::N0)` with iroh's
+only `E`: `examples/echo/client` binds `Endpoint::bind(presets::N0)` with iroh's
 default features and connects to `EndpointAddr::new(id)`.
 
 ## 5. What differs from a long-running iroh endpoint
@@ -259,7 +259,7 @@ synchronous, as the Durable Object's `sql.exec` is: do the SQL, return the
 result, then await. `Sql::exec(query, params)` takes positional parameters and
 returns rows of `Value`; integers beyond ±2^53 lose precision on workerd
 (`crates/iroh-do-core/src/sql.rs`). `with_sql` returns `None` if the object
-was destroyed. The chat wraps it to log errors (`apps/chat/src/lib.rs`,
+was destroyed. The chat wraps it to log errors (`examples/chat/app/src/lib.rs`,
 `Chat::sql`).
 
 `App::schema` returns statements run on every construction of a minted object,
@@ -293,7 +293,7 @@ knows about:
   connection is open is fine; a loop that ticks while no peer is connected
   keeps the object resident.
 
-`CallBack` in `harness/native/tests/library.rs` shows the pattern: the handler
+`CallBack` in `crates/iroh-do-harness/tests/library.rs` shows the pattern: the handler
 schedules, `on_alarm` spawns, the task dials.
 
 ### Idle connections are closed by the object
@@ -327,7 +327,7 @@ Once a handler has reported through `Activity`, the node stops sampling frames
 for that connection and closes it exactly one limit after the last report.
 While any `StreamGuard` is alive the limit is `Config::t_silent` (60 s by
 default) and the reason `silent`. The chat's handlers work this way
-(`apps/chat/src/ctl.rs`, `apps/chat/src/room.rs`). A handler that reports must
+(`examples/chat/app/src/ctl.rs`, `examples/chat/app/src/room.rs`). A handler that reports must
 report all of its activity, because frame counts are then ignored.
 
 Under iroh's `Router`, a connection is closed when its handler returns and

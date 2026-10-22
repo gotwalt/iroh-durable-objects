@@ -17,7 +17,7 @@
 //! compares deadlines with the clock, not with timer events. n0-future looks `setTimeout` up on
 //! `globalThis` at every call, so replacing the property covers every iroh and noq timer.
 //!
-//! `harness/workerd/clock-test.mjs` emulates the production clock and fails without this.
+//! `tests/workerd/clock-test.mjs` emulates the production clock and fails without this.
 
 use std::cell::Cell;
 

@@ -1,0 +1,14 @@
+[package]
+name = "iroh-do-echo"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The echo app for iroh-do: iroh's own echo example, in a Durable Object"
+publish = false
+
+[dependencies]
+iroh-do = { path = "../../../crates/iroh-do" }
+iroh = { workspace = true }
+# `tokio::io::copy`, as iroh's example uses it. No runtime: the host provides one.
+tokio = { version = "1", default-features = false, features = ["io-util"] }

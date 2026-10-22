@@ -24,7 +24,7 @@ mv iroh-do-chat-<version>-macos-universal/iroh-do-chat /usr/local/bin/
 ```
 
 Then join a room with `iroh-do-chat <E> --nick <name>`. To build it from
-source instead: `cargo build --release -p iroh-do-demo` produces
+source instead: `cargo build --release -p iroh-do-chat` produces
 `target/release/iroh-do-chat`.
 
 ## The problem
@@ -190,10 +190,10 @@ LOCAL=1 just echo <E> "hello"    # a stock iroh peer echoes through the object
 ```
 
 On Cloudflare, with a zone that has Advanced Certificate Manager and an API
-token with the permissions listed in [`infra/README.md`](infra/README.md):
+token with the permissions listed in [`deploy/tofu/README.md`](deploy/tofu/README.md):
 
 ```sh
-cp infra/examples/terraform.tfvars.example infra/mine.auto.tfvars   # account and zone ids
+cp examples/deployment/infra/terraform.tfvars.example examples/deployment/infra/mine.auto.tfvars
 export CLOUDFLARE_API_TOKEN=...
 just up      # build and apply; OpenTofu owns every resource
 just mint chat friends   # create a chat endpoint labelled "friends"; prints E and the join command
@@ -226,22 +226,32 @@ indexes the rest of the documentation.
 
 ## Layout
 
+The plumbing, what iroh-do provides:
+
 ```
 crates/iroh-relay-ingress/      server side of the iroh relay protocol, sans-io
 crates/iroh-ingress-transport/  iroh custom transport whose paths are peers' relay sockets
 crates/iroh-do-core/            object lifecycle, Endpoint build and teardown, the app API
 crates/iroh-do/                 the library: router, endpoint and registry objects, `worker!` (wasm32 glue)
-crates/iroh-do-worker/          this repository's deployment: script `iroh-do` with the chat and echo apps
-crates/iroh-do-demo/            the iroh-do-chat client and diagnostics CLI (stock iroh)
-apps/chat/                      the chat room and diagnostic protocols
-apps/echo/                      iroh's echo example as an app
-apps/echo-client/               a stock iroh peer for the echo app
-harness/native/                 tokio host for the same code, with tests against stock peers
-harness/workerd/                local workerd config and Miniflare eviction tests
-infra/                          OpenTofu module for the Cloudflare deployment
-docs/                           design, decision log, verification, measurements
-upstream/                       proposed iroh patch, reference only
+crates/iroh-do-harness/         tokio host for the same code, for testing apps against stock peers
+deploy/build-worker.sh          builds the Worker bundle of any deployment crate (deploy/BUILD.md)
+deploy/tofu/                    OpenTofu module for a deployment on Cloudflare
+tests/workerd/                  Miniflare tests of the library on workerd, run on the example bundle
 ```
+
+The examples built on it:
+
+```
+examples/chat/app/              the chat room and diagnostic protocols
+examples/chat/client/           the iroh-do-chat client and diagnostics CLI (stock iroh)
+examples/echo/app/              iroh's echo example as an app
+examples/echo/client/           a stock iroh peer for the echo app
+examples/deployment/            this repository's deployment of both: the crate, wrangler.toml,
+                                and infra/, the OpenTofu root module, its variables and state
+```
+
+Also: `docs/` (design, decision log, verification, measurements), `scripts/`
+(signing and release), and `upstream/` (proposed iroh patch, reference only).
 
 ## License
 

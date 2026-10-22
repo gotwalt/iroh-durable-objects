@@ -42,8 +42,8 @@ step "preflight"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] \
     || die "VERSION must be semver without a leading v, e.g. 0.1.0 (got $version)"
 
-crate_version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/iroh-do-demo/Cargo.toml | head -1)
-[ "$crate_version" = "$version" ] || die "crates/iroh-do-demo/Cargo.toml has version = \"$crate_version\"; set it to version = \"$version\", commit, and rerun"
+crate_version=$(sed -n 's/^version = "\(.*\)"/\1/p' examples/chat/client/Cargo.toml | head -1)
+[ "$crate_version" = "$version" ] || die "examples/chat/client/Cargo.toml has version = \"$crate_version\"; set it to version = \"$version\", commit, and rerun"
 
 ident="${IROH_DO_CODESIGN_IDENTITY:-}"
 if [ -z "$ident" ]; then
@@ -71,7 +71,7 @@ fi
 
 step "build (aarch64 and x86_64)"
 for target in aarch64-apple-darwin x86_64-apple-darwin; do
-    cargo build --release --locked -p iroh-do-demo --target "$target"
+    cargo build --release --locked -p iroh-do-chat --target "$target"
 done
 rm -rf "$dist"
 mkdir -p "$dist/$bundle"

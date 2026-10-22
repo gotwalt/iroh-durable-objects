@@ -37,7 +37,8 @@ handlers, its schema and its scheduled work (see [Apps](#apps)). This
 deployment has two, the chat room and iroh's echo example; all endpoints,
 whatever their app, share the namespace `<E>.<zone>`.
 
-The Worker script is `iroh-do`, built from `crates/iroh-do-worker`, which lists
+The Worker script is `iroh-do`, built from `examples/deployment`
+([`design-notes/012`](design-notes/012-plumbing-and-examples.md)), which lists
 its apps in `iroh_do::worker!`. Its classes are exported as `endpoint` and
 `registry`, so Cloudflare names the namespaces `iroh-do_endpoint` and
 `iroh-do_registry`; the router reaches them through the bindings `ENDPOINTS`
@@ -179,8 +180,8 @@ there (`crates/iroh-do/src/lib.rs`). An endpoint's app is stored in its
 identity at mint; an object whose app is missing from the running build
 refuses all traffic.
 
-The apps in this repository are `apps/chat` (the chat room and the diagnostic
-protocols, design notes 006–008) and `apps/echo` (iroh's `examples/echo.rs`
+The apps in this repository are `examples/chat/app` (the chat room and the diagnostic
+protocols, design notes 006–008) and `examples/echo/app` (iroh's `examples/echo.rs`
 handler, unchanged). `docs/writing-an-app.md` describes writing one.
 
 ## Lifecycle
@@ -206,7 +207,7 @@ been created.
 timers. The object is eligible for hibernation, and Cloudflare evicts it from
 memory while its WebSockets stay open. With Miniflare, a Warm object that has
 already run an `Endpoint` has no pending timers or fetches and is evicted on
-demand in 5 ms (`harness/workerd/evict-test.mjs`).
+demand in 5 ms (`tests/workerd/evict-test.mjs`).
 
 **Active.** An `Endpoint` is running, or an app task spawned with `Ctx::spawn` is. The first datagram from a Warm state
 starts the build; datagrams that arrive during the build wait in a FIFO queue
@@ -263,7 +264,7 @@ the production clock reads exactly the scheduled time, so noq finds its
 deadline not yet reached and re-arms with a zero delay, and the clock does not
 move until some other event arrives. Measured in production, this spun for
 1.5–3.6 s of CPU per session. The Worker adds 1 ms to every `setTimeout` delay
-(`crates/iroh-do/src/glue/timers.rs`); `harness/workerd/clock-test.mjs`
+(`crates/iroh-do/src/glue/timers.rs`); `tests/workerd/clock-test.mjs`
 emulates the production clock and fails without the fix. The root cause is
 the truncation in n0-future, which rounding up would remove.
 
@@ -282,7 +283,7 @@ The library's tables (`crates/iroh-do/src/schema.rs`):
 | `pkarr_state` | Result of the last publish. |
 
 The app's tables follow, from its `App::schema`. The chat's
-(`apps/chat/src/store.rs`):
+(`examples/chat/app/src/store.rs`):
 
 | Table | Contents |
 |---|---|
@@ -335,7 +336,7 @@ making the room its home relay; see [The chat room](#the-chat-room).
 ## The chat room
 
 An endpoint minted with the chat app is a small chat room (`iroh-do/room/1`,
-`apps/chat/src/room.rs`; protocol in
+`examples/chat/app/src/room.rs`; protocol in
 [`design-notes/008`](design-notes/008-chat-room.md)). Members run
 `iroh-do-chat <E>`. Messages, actions, joins, parts and nick changes are
 stored in the `log` table, so scrollback survives hibernation, eviction and
@@ -436,7 +437,7 @@ to it. Minting stays behind the admin token
 |---|---|---|
 | Idle or silent close | Application close, code 0, reason `idle` or `silent` | Redials when it next sends, with a full handshake |
 | Active → Warm | Nothing; its connections were already closed | None needed |
-| Abrupt eviction: deploy, crash, runtime decision | Packets on the old connection go unanswered until the negotiated QUIC idle timeout expires (10 s in `abrupt_restart_documented`, `harness/native/tests/node.rs`) | Redials; the object rebuilds from storage |
+| Abrupt eviction: deploy, crash, runtime decision | Packets on the old connection go unanswered until the negotiated QUIC idle timeout expires (10 s in `abrupt_restart_documented`, `examples/chat/app/tests/node.rs`) | Redials; the object rebuilds from storage |
 | Peer closes its relay socket | n/a | The object drops the session; if it was the last, the object is Cold |
 | Second socket from the same peer | Old socket closed with code 4000 | The new socket replaces the path |
 | Alarm work fails (for example a storage error) | Dial-back or republish delayed | The row is retried after 30 s; other rows still run |

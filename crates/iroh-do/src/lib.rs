@@ -12,7 +12,7 @@
 //! Each `endpoint` object hosts one iroh endpoint `E`, running the app it was minted with, and
 //! serves the iroh relay protocol for it at `https://<E>.<zone>/relay`, so stock iroh peers
 //! reach `E` with no changes. Build instructions and the bundle layout are in
-//! `crates/iroh-do-worker/BUILD.md`.
+//! `deploy/BUILD.md`.
 //!
 //! The relay protocol server side is `iroh-relay-ingress`, the `CustomTransport` that feeds it
 //! into an iroh `Endpoint` is `iroh-ingress-transport`, and the Cold/Warm/Active lifecycle and

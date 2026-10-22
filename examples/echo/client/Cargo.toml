@@ -1,0 +1,15 @@
+[package]
+name = "iroh-do-echo-client"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "A stock iroh peer for the echo app: iroh's echo example's connecting side, dialing by EndpointId"
+publish = false
+
+[dependencies]
+# Stock iroh with DEFAULT features and default discovery (spec P3), as examples/chat/client.
+# No dependency on the iroh-do crates, whose iroh features would be unified into this one.
+iroh = { workspace = true, default-features = true }
+n0-error = "1.0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

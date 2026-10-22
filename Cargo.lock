@@ -1675,34 +1675,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "iroh-do-chat-app"
-version = "0.1.0"
-dependencies = [
- "iroh",
- "iroh-do-core",
- "n0-future",
- "rusqlite",
- "serde_json",
- "tracing",
-]
-
-[[package]]
-name = "iroh-do-core"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "iroh",
- "iroh-ingress-transport",
- "n0-future",
- "ring",
- "rustls",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "iroh-do-demo"
+name = "iroh-do-chat"
 version = "0.1.0"
 dependencies = [
  "chrono",
@@ -1718,6 +1691,36 @@ dependencies = [
  "tokio",
  "tracing-subscriber",
  "unicode-width",
+]
+
+[[package]]
+name = "iroh-do-chat-app"
+version = "0.1.0"
+dependencies = [
+ "iroh",
+ "iroh-do-core",
+ "iroh-do-harness",
+ "n0-future",
+ "rusqlite",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "iroh-do-core"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "iroh",
+ "iroh-ingress-transport",
+ "n0-future",
+ "ring",
+ "rustls",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1746,9 +1749,7 @@ dependencies = [
  "bytes",
  "futures-util",
  "iroh",
- "iroh-do-chat-app",
  "iroh-do-core",
- "iroh-do-echo",
  "iroh-relay-ingress",
  "rand 0.10.3",
  "rusqlite",

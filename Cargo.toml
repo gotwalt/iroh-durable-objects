@@ -4,13 +4,13 @@ members = [
   "crates/iroh-relay-ingress",
   "crates/iroh-ingress-transport",
   "crates/iroh-do-core",
-  "apps/chat",
-  "apps/echo",
-  "apps/echo-client",
   "crates/iroh-do",
-  "crates/iroh-do-worker",
-  "crates/iroh-do-demo",
-  "harness/native",
+  "crates/iroh-do-harness",
+  "examples/chat/app",
+  "examples/chat/client",
+  "examples/echo/app",
+  "examples/echo/client",
+  "examples/deployment",
 ]
 
 [workspace.package]
@@ -34,5 +34,5 @@ codegen-units = 1
 
 # The release profile above optimises the wasm Worker for size. The native
 # client is optimised for speed.
-[profile.release.package.iroh-do-demo]
+[profile.release.package.iroh-do-chat]
 opt-level = 3
