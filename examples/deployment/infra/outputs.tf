@@ -17,8 +17,3 @@ output "script_name" {
   description = "Worker script name. Deleting the script deletes every endpoint identity."
   value       = module.iroh_do.script_name
 }
-
-output "certificate_status" {
-  description = "ACM certificate pack status; HTTPS to <E>.<zone_suffix> fails until it is \"active\"."
-  value       = module.iroh_do.certificate_status
-}

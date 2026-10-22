@@ -24,7 +24,7 @@ that reviews refer to; `docs/design-notes/` records every change to it.
   The package `iroh-do-chat` (`examples/chat/client`) builds the binary.
 - **Production belongs to the user.** Do not run `tofu apply`, `just up` or
   `just down` against Cloudflare without the user's approval for that run.
-  Save the plan with `-out` and show it first. Credentials come from the
+  Save the plan with `-out` (`just plan` does) and show it first; `just apply` applies only that saved plan. Credentials come from the
   environment; never print token values.
 - **Endpoint ids in URLs and DNS labels** use `PublicKey::to_z32` and
   `PublicKey::from_z32`, never `Display` or `FromStr` (design note 004).

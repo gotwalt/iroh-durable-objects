@@ -37,7 +37,7 @@ module "iroh_do" {
 
 The other inputs and their defaults are in `variables.tf`; the outputs
 (`admin_url`, `endpoint_url_template`, `zone_suffix`, `script_name`,
-`bundle_sha256`, `certificate_status`) in `outputs.tf`. The root module should
+`bundle_sha256`) in `outputs.tf`. The root module should
 encrypt its state: the admin token is stored there
 (`examples/deployment/infra/encryption.tf`).
 
@@ -60,7 +60,9 @@ encrypt its state: the admin token is stored there
   manages on full-setup zones.
 
 It also reads the account's script list (`data.cloudflare_workers_scripts`) to
-decide whether the migration still needs to be sent; see `main.tf`.
+decide whether the migration still needs to be sent; see `worker.tf`.
+`worker.tf` holds the script, `hostnames.tf` the DNS record, route and
+certificate.
 
 Versions are pinned exactly: OpenTofu 1.13.1 and `cloudflare/cloudflare` 5.28.1,
 with no other providers (`versions.tf`; this repository's lock file is in
@@ -199,21 +201,29 @@ Because of this:
 
 ## Verified and unverified
 
-Verified in production: after the first apply and one refresh, `just plan`
+Verified in production, with the configuration as it was before design note
+012 (one root module, the same resources): after the first apply, `just plan`
 reported no changes, and again after an apply that only changed the bundle
 (which also exercised the skipped migration on an already-migrated script).
-Those applies used a token with more permissions than the table above. It
-showed one requirement that is easy to miss: refreshing the route reads it back
-with `GET /zones/{zone}/workers/routes/{id}`, which returns 403 (code 10000)
-unless the token holds Workers Routes: Edit on the zone, even when listing and
-creating routes succeed.
+Replacing the script (design note 011, phase 5) showed that deleting a script
+deletes its routes; the route is now replaced with the script
+(`replace_triggered_by`). Those applies used a token with more permissions
+than the table above. It showed one requirement that is easy to miss:
+refreshing the route reads it back with `GET /zones/{zone}/workers/routes/{id}`,
+which returns 403 (code 10000) unless the token holds Workers Routes: Edit on
+the zone, even when listing and creating routes succeed.
+
+Verified by reading the provider (5.28.1, `internal/services/workers_script/`),
+not by a deploy: on create the provider sends `migrations` from the
+configuration, and `ignore_changes = [migrations]` keeps the plan after the
+first apply empty once the configuration stops sending it. Before design note
+012, `just up` ran a second apply to clear that diff.
 
 Not yet verified:
 
 - that the five permissions above are sufficient on their own;
-- a first deploy on a fresh account with the current `main.tf` (migration sent
-  with `old_tag = null`), including the refresh step inside `just up`.
+- a first deploy on a fresh account with this module.
 
 Certificate issuance takes minutes. `just up` polls `https://admin.<suffix>/mint`
-for up to 15 minutes, then runs a refresh-only apply so the active certificate
-status is recorded in state.
+for up to 15 minutes. While it waits, the pack's status is in
+`tofu state show module.iroh_do.cloudflare_certificate_pack.wildcard`.

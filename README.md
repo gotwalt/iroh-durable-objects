@@ -200,7 +200,7 @@ just mint chat friends   # create a chat endpoint labelled "friends"; prints E a
 just mint echo      # create an echo endpoint; then: just echo <E>
 just destroy-room <E>   # delete an endpoint, its key and its history (asks first)
 just demo           # the scripted session above
-just plan    # expect no changes
+just plan    # expect no changes; a saved plan with changes is applied by: just apply
 just down    # delete everything, identities included
 ```
 

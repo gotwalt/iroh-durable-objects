@@ -22,8 +22,3 @@ output "bundle_sha256" {
   description = "Content address of the deployed bundle (BUNDLE_SHA256 binding)."
   value       = local.bundle_sha256
 }
-
-output "certificate_status" {
-  description = "ACM certificate pack status; HTTPS to <E>.<zone_suffix> fails until it is \"active\"."
-  value       = cloudflare_certificate_pack.wildcard.status
-}

@@ -72,13 +72,6 @@ up: build
     export TF_VAR_state_passphrase="$(cat "{{demo_dir}}/state_passphrase")"
     tofu -chdir="{{infra}}" init -input=false
     tofu -chdir="{{infra}}" apply -input=false
-    # After a first deploy the live script reports its migration tag, so the
-    # config stops sending the migration (see deploy/tofu/main.tf) and the plan shows
-    # it being dropped from state. Converge now, so `just plan` is a zero diff.
-    # This re-uploads the same script without a migration; it changes nothing.
-    if ! tofu -chdir="{{infra}}" plan -input=false -detailed-exitcode >/dev/null; then
-        tofu -chdir="{{infra}}" apply -input=false -auto-approve
-    fi
     echo
     echo "endpoint URL template: $(tofu -chdir="{{infra}}" output -raw endpoint_url_template)"
     admin=$(tofu -chdir="{{infra}}" output -raw admin_url)
@@ -87,14 +80,11 @@ up: build
     for i in $(seq 1 90); do
         code=$(curl -s -o /dev/null -w '%{http_code}' -X GET "$admin/mint" || true)
         if [ "$code" != "000" ]; then
-            # Record the now-active certificate status in state (no infrastructure
-            # change); otherwise the next `just plan` shows it as drift.
-            tofu -chdir="{{infra}}" apply -refresh-only -auto-approve -input=false >/dev/null
-            echo "TLS OK (GET /mint -> $code). Next: just mint && just demo"; exit 0
+            echo "TLS OK (GET /mint -> $code). Next: just mint chat && just demo"; exit 0
         fi
         sleep 10
     done
-    echo "certificate not serving yet; check: tofu -chdir=examples/deployment/infra output certificate_status" >&2
+    echo "certificate not serving yet; its status: tofu -chdir=examples/deployment/infra state show module.iroh_do.cloudflare_certificate_pack.wildcard" >&2
     exit 1
 
 # Mint an endpoint of app APP (default chat) inside the Worker; write E (never the key) to
@@ -353,8 +343,20 @@ plan:
     : "${CLOUDFLARE_API_TOKEN:?export CLOUDFLARE_API_TOKEN first}"
     export TF_VAR_admin_token="$(cat "{{demo_dir}}/admin_token")"
     export TF_VAR_state_passphrase="$(cat "{{demo_dir}}/state_passphrase")"
-    tofu -chdir="{{infra}}" plan -input=false -detailed-exitcode && echo "zero diff" || {
-        rc=$?; [ $rc -eq 2 ] && echo "plan has changes (exit 2)" >&2; exit $rc; }
+    # Saved (encrypted) so that `just apply` applies exactly what was shown.
+    tofu -chdir="{{infra}}" plan -input=false -detailed-exitcode -out="{{demo_dir}}/plan.tfplan" && echo "zero diff" || {
+        rc=$?; [ $rc -eq 2 ] && echo "plan has changes (exit 2); saved to .demo/plan.tfplan; apply it with: just apply" >&2; exit $rc; }
+
+# Apply the plan `just plan` saved, and nothing else.
+apply:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${CLOUDFLARE_API_TOKEN:?export CLOUDFLARE_API_TOKEN first}"
+    [ -s "{{demo_dir}}/plan.tfplan" ] || { echo "error: no saved plan; run just plan first" >&2; exit 1; }
+    export TF_VAR_admin_token="$(cat "{{demo_dir}}/admin_token")"
+    export TF_VAR_state_passphrase="$(cat "{{demo_dir}}/state_passphrase")"
+    tofu -chdir="{{infra}}" apply -input=false "{{demo_dir}}/plan.tfplan"
+    rm -f "{{demo_dir}}/plan.tfplan"
 
 # tofu destroy after typed confirmation. Deletes every endpoint identity with the script.
 down:
@@ -388,7 +390,7 @@ infra-check:
     #!/usr/bin/env bash
     set -euo pipefail
     export TF_VAR_state_passphrase="${TF_VAR_state_passphrase:-validate-only-not-a-secret}"
-    tofu -chdir="{{infra}}" fmt -check -recursive
+    tofu fmt -check -recursive "{{root}}/deploy/tofu" "{{infra}}"
     tofu -chdir="{{infra}}" init -input=false -backend=false >/dev/null
     tofu -chdir="{{infra}}" validate
 
