@@ -344,6 +344,39 @@ hello
 connected in 40 ms, echoed 5 bytes in 55 ms
 ```
 
+## Step 1: production (2026-10-22)
+
+`just apply` added the deployment `iroh-ts` (4 resources) and changed nothing in
+`module.iroh_do`; the plan showed 0 to change, 0 to destroy. Afterwards the chat
+endpoint on `iroh-do` still reported bundle `e1073cc3b6ef`, and
+`iroh-do-chat ping` and `log` succeeded over default discovery.
+
+On `iroh-ts`:
+
+- Mint returned `published: true`.
+- `iroh-do-echo-client <E> <text>` with no relay option, so the peer found `E`
+  through pkarr, echoed 8 times. Connects took 248–321 ms, and 642–732 ms for
+  the first connect of each run.
+- Afterwards the status read `state: Cold`, `tasks: 0`, `open_streams: 0`, and
+  pkarr `ok` with the next publish a day later.
+
+CPU, from `wrangler tail iroh-ts --format json` during 5 echoes:
+
+- The tail recorded all 5 relay upgrades at the router, but the object's events
+  for only one session; the others are missing for a reason not found.
+- That session: the router's upgrade took 17 ms of CPU, and the object's 13
+  events (wake, authentication, endpoint bind, the echo connection, close) took
+  33 ms in total.
+- No event exceeded 17 ms, and none raised an exception.
+
+Before the `setTimeout` round-up, the Rust host measured 1.5–3.6 s of CPU per
+session (`design.md` § Time). One session is not a distribution; a CPU figure
+for the TypeScript host should come from Workers observability over many
+sessions.
+
+`evicted_active` was not logged. It can appear only when production evicts an
+object with a connection open, which needs observation over days.
+
 ## Reproduce
 
 ```sh

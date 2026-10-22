@@ -184,6 +184,40 @@ The apps in this repository are `examples/chat/app` (the chat room and the diagn
 protocols, design notes 006–008) and `examples/echo/app` (iroh's `examples/echo.rs`
 handler, unchanged). `docs/writing-an-app.md` describes writing one.
 
+## The TypeScript host
+
+[`design-notes/013`](design-notes/013-typescript-host.md) moves the Durable
+Object class to TypeScript. The move is in progress. The Rust host described in
+the rest of this document still serves the deployment `iroh-do`. The TypeScript
+host serves a second deployment, `iroh-ts` (`*.iroh-ts.<zone>`), which runs the
+echo app.
+
+- `crates/iroh-do-wasm` builds the ingress, the node, the endpoint and the
+  transport into one wasm module with `wasm-bindgen --target web`, without
+  workers-rs. It holds no Cloudflare types. TypeScript passes it socket ids,
+  bytes and session snapshots, and receives frames through one callback.
+- `packages/iroh-do` exports `IrohDurableObject` and `irohRouter`.
+  - The class owns the platform: the relay upgrade, hibernatable WebSockets and
+    their attachments, the alarm and the schedule table, the identity and the
+    counters in `iroh_*` tables, and Workers RPC for mint, status and destroy.
+  - Apps register handlers by ALPN in the shape of iroh's `ProtocolHandler`,
+    and use `this.ctx.storage.sql` directly.
+  - The connection and stream API follows iroh's Node bindings,
+    `@number0/iroh`. The package README lists the differences.
+- An accepted connection is closed with reason `done` when its handler's
+  promise settles. Stream halves count as open until they are finished, reset,
+  read to the end or stopped, which drives the idle and silent close without a
+  guard API.
+- A panic traps the isolate's wasm instance. The class reinstantiates the
+  module, and every object rebuilds its node on its next event from storage and
+  socket attachments, as on a wake.
+- An object constructed while its endpoint was bound logs `evicted_active`.
+- The build writes a `manifest.json` naming the bundle's modules. `deploy/tofu`
+  uploads a deployment from it.
+
+Evidence, from Miniflare and from production, is in
+[`verification/ts-host.md`](verification/ts-host.md).
+
 ## Lifecycle
 
 ```

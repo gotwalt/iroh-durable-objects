@@ -46,6 +46,19 @@ that reviews refer to; `docs/design-notes/` records every change to it.
   - `node tests/workerd/evict-test.mjs`: forced eviction in Miniflare.
   - `LOCAL_PORT=8799 just local`: the scripted session on workerd. Port 8787
     is taken by another program on the maintainer's machine.
+  - The TypeScript host (design note 013), after `npm ci` at the root and
+    `cargo build -p iroh-do-test-peer`:
+    - `npm --prefix packages/iroh-do run check` and `npm --prefix
+      packages/iroh-do test`: connection lifetime and panic recovery in
+      Miniflare.
+    - `npm --prefix examples/echo/server run check`, `run build` and `test`:
+      mint, pkarr, destroy, forced hibernation and the eviction marker.
+    - The test peers must be found at `target/debug`; with a different
+      `CARGO_TARGET_DIR`, set `IROH_DO_DEMO` and `IROH_DO_ECHO` for
+      `tests/workerd/evict-test.mjs`.
+- Do not stop `workerd` processes by name (`pkill -f workerd`): the
+  maintainer's machine runs other workerd programs. Stop the process you
+  started, by its pid.
 
 ## Writing
 

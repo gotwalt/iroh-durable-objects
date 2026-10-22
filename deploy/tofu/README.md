@@ -80,12 +80,15 @@ encrypt its state: the admin token is stored there
 
 ## What it creates
 
-- `cloudflare_workers_script.iroh_do`: the bundle (`index.js` as the main
-  module, `index_bg.wasm` imported by it), the bindings `ENDPOINTS` (the `endpoint`
-  namespace), `REGISTRY` (the `registry` namespace), `ADMIN_TOKEN` (secret),
-  `ZONE_SUFFIX`, `BUNDLE_SHA256`, `PKARR_RELAY` and `LOG_LEVEL`, the Durable
-  Object migration `v1` (`new_sqlite_classes = ["endpoint", "registry"]`), and
-  Workers Logs and traces (`observability`).
+- `cloudflare_workers_script.iroh_do`: the bundle (with `worker_bundle_dir`,
+  `index.js` as the main module and `index_bg.wasm` imported by it; with
+  `worker_manifest`, the modules the manifest lists), the bindings `ENDPOINTS`
+  (the `endpoint` namespace), `REGISTRY` (the `registry` namespace; omitted when
+  `registry_class_name` is null), `ADMIN_TOKEN` (secret), `ZONE_SUFFIX`,
+  `BUNDLE_SHA256`, `PKARR_RELAY` and `LOG_LEVEL`, the Durable Object migration
+  `v1` (`new_sqlite_classes` lists the bound classes), and Workers Logs and
+  traces (`observability`). The binding and class names given here are the
+  defaults; the `*_binding_name` and `*_class_name` variables change them.
 - `cloudflare_dns_record.wildcard`: a proxied `AAAA 100::` record for
   `*.iroh-do.<zone>`. It only makes the names resolve to Cloudflare; the route
   serves every request, so nothing is sent to `100::`.
