@@ -1,0 +1,426 @@
+{
+  "name": "ctl",
+  "description": "iroh-do/ctl/1: one reply line per request line on a member-opened stream. Every line other than /status, /count, /log and /callback is logged and echoed. The object opens one uni stream per connection after the first reply.",
+  "members": [
+    "ana",
+    "bo"
+  ],
+  "steps": [
+    {
+      "member": "ana",
+      "note": "echo with the record's seq, the log total and the peer's record count; then the unprompted hello",
+      "proto": "ctl",
+      "send": "hello world\n",
+      "expect": [
+        "echo: hello world (#1, total 1, yours 1)"
+      ],
+      "deliveries": {
+        "ana": [
+          {
+            "$text": [
+              "hello from ",
+              {
+                "$ref": "room"
+              },
+              ": you are ",
+              {
+                "$ref": "peer:ana"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "member": "ana",
+      "proto": "ctl",
+      "send": "/count\n",
+      "expect": [
+        {
+          "total": 1,
+          "yours": 1,
+          "peers": 1
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "CRLF is stripped",
+      "proto": "ctl",
+      "send": "second\r\n",
+      "expect": [
+        "echo: second (#2, total 2, yours 2)"
+      ]
+    },
+    {
+      "member": "bo",
+      "proto": "ctl",
+      "send": "from bo\n",
+      "expect": [
+        "echo: from bo (#3, total 3, yours 1)"
+      ],
+      "deliveries": {
+        "bo": [
+          {
+            "$text": [
+              "hello from ",
+              {
+                "$ref": "room"
+              },
+              ": you are ",
+              {
+                "$ref": "peer:bo"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "member": "ana",
+      "note": "newest 5 records, oldest first",
+      "proto": "ctl",
+      "send": "/log\n",
+      "expect": [
+        [
+          {
+            "seq": 1,
+            "ts_ms": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "kind": "ctl",
+            "text": "hello world"
+          },
+          {
+            "seq": 2,
+            "ts_ms": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "kind": "ctl",
+            "text": "second"
+          },
+          {
+            "seq": 3,
+            "ts_ms": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "kind": "ctl",
+            "text": "from bo"
+          }
+        ]
+      ]
+    },
+    {
+      "member": "ana",
+      "proto": "ctl",
+      "send": "/log 1\n",
+      "expect": [
+        [
+          {
+            "seq": 3,
+            "ts_ms": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "kind": "ctl",
+            "text": "from bo"
+          }
+        ]
+      ]
+    },
+    {
+      "member": "ana",
+      "proto": "ctl",
+      "send": "/log x\n",
+      "expect": [
+        "error: usage /log [n], n <= 50"
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "capped at 50",
+      "proto": "ctl",
+      "send": "/log 500\n",
+      "expect": [
+        [
+          {
+            "seq": 1,
+            "ts_ms": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "kind": "ctl",
+            "text": "hello world"
+          },
+          {
+            "seq": 2,
+            "ts_ms": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "kind": "ctl",
+            "text": "second"
+          },
+          {
+            "seq": 3,
+            "ts_ms": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "kind": "ctl",
+            "text": "from bo"
+          }
+        ]
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "not the /log command: echoed",
+      "proto": "ctl",
+      "send": "/logx\n",
+      "expect": [
+        "echo: /logx (#4, total 4, yours 3)"
+      ]
+    },
+    {
+      "member": "ana",
+      "proto": "ctl",
+      "send": "/callback x\n",
+      "expect": [
+        "error: usage /callback <secs>, secs <= 50"
+      ]
+    },
+    {
+      "member": "ana",
+      "proto": "ctl",
+      "send": "/callback 51\n",
+      "expect": [
+        "error: usage /callback <secs>, secs <= 50"
+      ]
+    },
+    {
+      "member": "ana",
+      "proto": "ctl",
+      "send": "/callback -1\n",
+      "expect": [
+        "error: usage /callback <secs>, secs <= 50"
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "the object dials the member on iroh-do/notify/1 and writes one line",
+      "proto": "ctl",
+      "send": "/callback 0\n",
+      "expect": [
+        "ok: callback in 0s"
+      ],
+      "deliveries": {
+        "ana": [
+          {
+            "$text": [
+              "callback from ",
+              {
+                "$ref": "room"
+              },
+              " wakes=",
+              {
+                "$any": "int"
+              },
+              " records=4"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "member": "ana",
+      "note": "the dial-back is logged as kind callback",
+      "proto": "ctl",
+      "send": "/log 2\n",
+      "expect": [
+        [
+          {
+            "seq": 4,
+            "ts_ms": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "kind": "ctl",
+            "text": "/logx"
+          },
+          {
+            "seq": 5,
+            "ts_ms": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "kind": "callback",
+            "text": "delivered"
+          }
+        ]
+      ]
+    },
+    {
+      "member": "ana",
+      "proto": "ctl",
+      "send": "/status\n",
+      "expect": [
+        {
+          "id": {
+            "$ref": "room"
+          },
+          "app": "chat",
+          "state": "Active",
+          "wakes": {
+            "$any": "int"
+          },
+          "endpoint_builds": {
+            "$any": "int"
+          },
+          "connections": {
+            "$any": "int"
+          },
+          "bundle": {
+            "$any": "string"
+          },
+          "since_wake_ms": {
+            "$any": "int"
+          },
+          "records": 5,
+          "members": 0,
+          "present": 0
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "longer than the room's limit; logged text is cut at 1024 bytes",
+      "proto": "ctl",
+      "send": [
+        "",
+        {
+          "$repeat": [
+            "a",
+            2000
+          ]
+        },
+        "\n"
+      ],
+      "expect": [
+        {
+          "$text": [
+            "echo: ",
+            {
+              "$repeat": [
+                "a",
+                2000
+              ]
+            },
+            " (#6, total 6, yours 5)"
+          ]
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "proto": "ctl",
+      "send": "/log 1\n",
+      "expect": [
+        [
+          {
+            "seq": 6,
+            "ts_ms": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "kind": "ctl",
+            "text": {
+              "$text": [
+                {
+                  "$repeat": [
+                    "a",
+                    1024
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "an empty line is echoed",
+      "proto": "ctl",
+      "send": "\n",
+      "expect": [
+        "echo:  (#7, total 7, yours 6)"
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "an unterminated final line counts as a line",
+      "proto": "ctl",
+      "finish": true,
+      "send": "tail",
+      "expect": [
+        "echo: tail (#8, total 8, yours 7)"
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "longer than 4096 bytes: an error line, then the stream ends",
+      "proto": "ctl",
+      "finish": true,
+      "send": [
+        {
+          "$repeat": [
+            "a",
+            5000
+          ]
+        },
+        "\n"
+      ],
+      "expect": [
+        "error: line too long"
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "not UTF-8",
+      "proto": "ctl",
+      "finish": true,
+      "send": [
+        {
+          "$hex": "ff0a"
+        }
+      ],
+      "expect": [
+        "error: line is not utf-8"
+      ]
+    }
+  ]
+}

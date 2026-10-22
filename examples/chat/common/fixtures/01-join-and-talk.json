@@ -1,0 +1,435 @@
+{
+  "name": "join-and-talk",
+  "description": "Three members join, talk and act. Each event reaches every other joined member and not its author. /who lists joined members by nick. Text is trimmed at both ends, and JSON escaping and non-ASCII text survive.",
+  "members": [
+    "ana",
+    "bo",
+    "cy"
+  ],
+  "steps": [
+    {
+      "member": "ana",
+      "note": "first member: history holds only her own join",
+      "send": "/join ana\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "nick": "ana"
+          },
+          "last_seq": 1
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "note": "history holds both joins; ana is told",
+      "send": "/join bo\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 2,
+          "prev": 1,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": "bo",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo"
+          },
+          "last_seq": 2
+        }
+      ],
+      "deliveries": {
+        "ana": [
+          {
+            "t": "join",
+            "seq": 2,
+            "prev": 1,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo"
+          }
+        ]
+      }
+    },
+    {
+      "member": "cy",
+      "send": "/join cy\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 2,
+          "prev": 1,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": "bo",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 3,
+          "prev": 2,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:cy"
+          },
+          "nick": "cy",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:cy"
+            },
+            "nick": "cy"
+          },
+          "last_seq": 3
+        }
+      ],
+      "deliveries": {
+        "ana": [
+          {
+            "t": "join",
+            "seq": 3,
+            "prev": 2,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:cy"
+            },
+            "nick": "cy"
+          }
+        ],
+        "bo": [
+          {
+            "t": "join",
+            "seq": 3,
+            "prev": 2,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:cy"
+            },
+            "nick": "cy"
+          }
+        ]
+      }
+    },
+    {
+      "member": "ana",
+      "send": "/say hello room\n",
+      "expect": [
+        {
+          "t": "ok",
+          "seq": 4,
+          "prev": 3
+        }
+      ],
+      "deliveries": {
+        "bo": [
+          {
+            "t": "msg",
+            "seq": 4,
+            "prev": 3,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "nick": "ana",
+            "text": "hello room"
+          }
+        ],
+        "cy": [
+          {
+            "t": "msg",
+            "seq": 4,
+            "prev": 3,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "nick": "ana",
+            "text": "hello room"
+          }
+        ]
+      }
+    },
+    {
+      "member": "bo",
+      "send": "/me waves\n",
+      "expect": [
+        {
+          "t": "ok",
+          "seq": 5,
+          "prev": 4
+        }
+      ],
+      "deliveries": {
+        "ana": [
+          {
+            "t": "act",
+            "seq": 5,
+            "prev": 4,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo",
+            "text": "waves"
+          }
+        ],
+        "cy": [
+          {
+            "t": "act",
+            "seq": 5,
+            "prev": 4,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo",
+            "text": "waves"
+          }
+        ]
+      }
+    },
+    {
+      "member": "cy",
+      "note": "joined members ordered by nick, ignoring case",
+      "send": "/who\n",
+      "expect": [
+        {
+          "t": "who",
+          "members": [
+            {
+              "peer": {
+                "$ref": "peer:ana"
+              },
+              "nick": "ana",
+              "present": true
+            },
+            {
+              "peer": {
+                "$ref": "peer:bo"
+              },
+              "nick": "bo",
+              "present": true
+            },
+            {
+              "peer": {
+                "$ref": "peer:cy"
+              },
+              "nick": "cy",
+              "present": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "the argument is trimmed; inner spaces stay",
+      "send": "/say   padded   text  \n",
+      "expect": [
+        {
+          "t": "ok",
+          "seq": 6,
+          "prev": 5
+        }
+      ],
+      "deliveries": {
+        "bo": [
+          {
+            "t": "msg",
+            "seq": 6,
+            "prev": 5,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "nick": "ana",
+            "text": "padded   text"
+          }
+        ],
+        "cy": [
+          {
+            "t": "msg",
+            "seq": 6,
+            "prev": 5,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "nick": "ana",
+            "text": "padded   text"
+          }
+        ]
+      }
+    },
+    {
+      "member": "bo",
+      "note": "non-ASCII text and characters JSON escapes",
+      "send": [
+        "/say héllo 🎉 \"quoted\" back\\slash\ttab\n"
+      ],
+      "expect": [
+        {
+          "t": "ok",
+          "seq": 7,
+          "prev": 6
+        }
+      ],
+      "deliveries": {
+        "ana": [
+          {
+            "t": "msg",
+            "seq": 7,
+            "prev": 6,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo",
+            "text": "héllo 🎉 \"quoted\" back\\slash\ttab"
+          }
+        ],
+        "cy": [
+          {
+            "t": "msg",
+            "seq": 7,
+            "prev": 6,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo",
+            "text": "héllo 🎉 \"quoted\" back\\slash\ttab"
+          }
+        ]
+      }
+    },
+    {
+      "member": "ana",
+      "send": "/who\n",
+      "expect": [
+        {
+          "t": "who",
+          "members": [
+            {
+              "peer": {
+                "$ref": "peer:ana"
+              },
+              "nick": "ana",
+              "present": true
+            },
+            {
+              "peer": {
+                "$ref": "peer:bo"
+              },
+              "nick": "bo",
+              "present": true
+            },
+            {
+              "peer": {
+                "$ref": "peer:cy"
+              },
+              "nick": "cy",
+              "present": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

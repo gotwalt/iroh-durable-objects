@@ -1,0 +1,424 @@
+{
+  "name": "errors-and-grammar",
+  "description": "Refused requests and the request grammar: not joined, unknown requests, usage errors, terminators, one request per stream.",
+  "members": [
+    "ana",
+    "bo",
+    "cy"
+  ],
+  "steps": [
+    {
+      "member": "ana",
+      "note": "not joined",
+      "send": "/say hi\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "not joined: send /join [nick] first"
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "send": "/me hi\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "not joined: send /join [nick] first"
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "send": "/who\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "not joined: send /join [nick] first"
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "send": "/history\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "not joined: send /join [nick] first"
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "send": "/since 1\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "not joined: send /join [nick] first"
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "send": "/nick x\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "not joined: send /join [nick] first"
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "send": "/quit\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "not joined: send /join [nick] first"
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "an unknown request from a member that is not joined is also 'not joined'",
+      "send": "/nope\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "not joined: send /join [nick] first"
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "text without a slash",
+      "send": "hello\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "not joined: send /join [nick] first"
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "an empty line",
+      "send": "\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "not joined: send /join [nick] first"
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "send": "/join bo\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": "bo",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo"
+          },
+          "last_seq": 1
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "note": "unknown request",
+      "send": "/nope\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "unknown request"
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "send": "hello\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "unknown request"
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "send": "\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "unknown request"
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "note": "request names are case sensitive",
+      "send": "/SAY hi\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "unknown request"
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "note": "usage",
+      "send": "/say\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "usage: /say <text>"
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "note": "only spaces",
+      "send": "/say   \n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "usage: /say <text>"
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "send": "/me\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "usage: /me <text>"
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "note": "arguments of /who are ignored",
+      "send": "/who extra\n",
+      "expect": [
+        {
+          "t": "who",
+          "members": [
+            {
+              "peer": {
+                "$ref": "peer:bo"
+              },
+              "nick": "bo",
+              "present": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "member": "cy",
+      "send": "/join cy\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": "bo",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 2,
+          "prev": 1,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:cy"
+          },
+          "nick": "cy",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:cy"
+            },
+            "nick": "cy"
+          },
+          "last_seq": 2
+        }
+      ],
+      "deliveries": {
+        "bo": [
+          {
+            "t": "join",
+            "seq": 2,
+            "prev": 1,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:cy"
+            },
+            "nick": "cy"
+          }
+        ]
+      }
+    },
+    {
+      "member": "cy",
+      "note": "no terminator",
+      "send": "/who",
+      "expect": [
+        {
+          "t": "who",
+          "members": [
+            {
+              "peer": {
+                "$ref": "peer:bo"
+              },
+              "nick": "bo",
+              "present": true
+            },
+            {
+              "peer": {
+                "$ref": "peer:cy"
+              },
+              "nick": "cy",
+              "present": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "member": "cy",
+      "note": "CRLF terminator",
+      "send": "/who\r\n",
+      "expect": [
+        {
+          "t": "who",
+          "members": [
+            {
+              "peer": {
+                "$ref": "peer:bo"
+              },
+              "nick": "bo",
+              "present": true
+            },
+            {
+              "peer": {
+                "$ref": "peer:cy"
+              },
+              "nick": "cy",
+              "present": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "member": "cy",
+      "note": "the CR is not part of the text",
+      "send": "/say crlf\r\n",
+      "expect": [
+        {
+          "t": "ok",
+          "seq": 3,
+          "prev": 2
+        }
+      ],
+      "deliveries": {
+        "bo": [
+          {
+            "t": "msg",
+            "seq": 3,
+            "prev": 2,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:cy"
+            },
+            "nick": "cy",
+            "text": "crlf"
+          }
+        ]
+      }
+    },
+    {
+      "member": "cy",
+      "note": "two lines on one stream",
+      "send": "/who\n/who\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "one request per stream"
+        }
+      ]
+    },
+    {
+      "member": "cy",
+      "note": "a newline inside the request",
+      "send": "/say a\nb",
+      "expect": [
+        {
+          "t": "err",
+          "text": "one request per stream"
+        }
+      ]
+    },
+    {
+      "member": "cy",
+      "send": "/history 3 4\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "usage: /history [n], n <= 200"
+        }
+      ]
+    },
+    {
+      "member": "cy",
+      "send": "/since 1 2\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "usage: /since <seq>"
+        }
+      ]
+    }
+  ]
+}

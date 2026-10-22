@@ -1,0 +1,97 @@
+{
+  "name": "echo",
+  "description": "iroh-do/echo/1: each member-opened bidirectional stream is echoed back byte for byte until the member finishes its side. Each stream is logged as an echo record.",
+  "members": [
+    "ana"
+  ],
+  "steps": [
+    {
+      "member": "ana",
+      "note": "bytes come back unchanged",
+      "proto": "echo",
+      "send": "hello",
+      "expect_raw": "hello"
+    },
+    {
+      "member": "ana",
+      "note": "bytes that are not UTF-8",
+      "proto": "echo",
+      "send": [
+        {
+          "$hex": "00ff10"
+        }
+      ],
+      "expect_raw": [
+        {
+          "$hex": "00ff10"
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "an empty stream",
+      "proto": "echo",
+      "send": "",
+      "expect_raw": ""
+    },
+    {
+      "member": "ana",
+      "note": "the three echo records",
+      "proto": "ctl",
+      "send": "/log 3\n",
+      "expect": [
+        [
+          {
+            "seq": 1,
+            "ts_ms": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "kind": "echo",
+            "text": "5 bytes"
+          },
+          {
+            "seq": 2,
+            "ts_ms": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "kind": "echo",
+            "text": "3 bytes"
+          },
+          {
+            "seq": 3,
+            "ts_ms": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "kind": "echo",
+            "text": "0 bytes"
+          }
+        ]
+      ],
+      "deliveries": {
+        "ana": [
+          {
+            "$text": [
+              "hello from ",
+              {
+                "$ref": "room"
+              },
+              ": you are ",
+              {
+                "$ref": "peer:ana"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
