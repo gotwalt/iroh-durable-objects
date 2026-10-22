@@ -13,7 +13,9 @@ Two rounds of verification of design note 013, both on 2026-10-22, with wrangler
   eviction marker.
 - **Step 2** (sections "Step 2: …", 2026-10-22, same versions): the chat app as class
   `Chat`, the registry and routing by app, and the deployment `iroh-ts` with both apps.
-  Not yet deployed to production.
+  Not yet deployed to production. The chat class was later rewritten against
+  `examples/chat/common/PROTOCOL.md` (Vitest 5.0.3, Biome 2.5.15); the step 2 sections
+  give the results for both versions where they were measured.
 
 Paths in the spike sections are the spike's.
 
@@ -382,16 +384,29 @@ object with a connection open, which needs observation over days.
 
 ## Step 2: what was built
 
-- `examples/chat/server/src/{app,store,chat}.ts`: the chat app of `examples/chat/app` as
-  class `Chat`. `store.ts` has the Rust app's SQL text unchanged. `app.ts` ports
-  `lib.rs`, `room.rs` and `ctl.rs`, including:
-  - the JSON escaping of `json_escape_into`, which differs from `JSON.stringify` (`\n` is
-    written `\u000a`);
-  - Rust's `str::trim` whitespace set, which differs from JavaScript's `trim` (U+0085 is
-    whitespace, U+FEFF is not);
-  - Rust's unsigned integer parsing (`+5` and `007` are accepted), with `usize` bounded at
-    2^32 − 1 as in the deployed wasm32 build;
-  - UTF-8 decoding that keeps a leading BOM, as `String::from_utf8` does.
+- `examples/chat/server`: class `Chat`, which implements
+  `examples/chat/common/PROTOCOL.md`. The first version was a transliteration of the Rust
+  app and copied its Rust-specific behavior (Unicode `trim`, `usize` parsing, the
+  hand-written JSON escaping). PROTOCOL.md now states those rules on their own terms (its
+  section "Changes"), the Rust app follows them, and the class was rewritten against the
+  specification:
+
+  | File | Lines | Holds |
+  |---|---|---|
+  | `src/chat.ts` | 126 | `class Chat extends IrohDurableObject`: builds storage and the protocols once per construction, creates the schema in the constructor, maps ALPNs to handlers, runs the alarm work, adds the status fields |
+  | `src/protocol.ts` | 330 | the wire format without I/O: ALPNs and limits, request framing and grammar, number and white-space rules, nick rules, the room and ctl lines as discriminated unions, encoding with `JSON.stringify` |
+  | `src/room.ts` | 369 | `iroh-do/room/1`: request handling, the rate limit, deliveries and the connections kept for reuse |
+  | `src/ctl.ts`, `src/lines.ts` | 143, 43 | `iroh-do/ctl/1` and its line framing |
+  | `src/echo.ts`, `src/notify.ts` | 38, 89 | `iroh-do/echo/1`; dial-backs over `iroh-do/notify/1` |
+  | `src/storage.ts` | 311 | the tables, typed row decoders that throw on values the schema rules out, and a transaction around each multi-statement write |
+  | `src/events.ts`, `src/rate-limit.ts`, `src/log.ts` | 24, 29, 61 | records as protocol lines; the sliding window; JSON log lines with targets `chat`, `chat.room`, `chat.ctl`, `chat.echo`, `chat.notify` |
+
+  The Rust app relies on its room lock to make a nick check and the writes that depend on
+  it atomic. The class handles a request synchronously from the check to the writes, so no
+  other event interleaves, and writes the member row and the event in one
+  `transactionSync`. Promises that are not awaited go through one helper that logs a
+  rejection with its stack. Unit tests (Vitest, `npm test` in `examples/chat/server`)
+  cover the parts without I/O; Biome lints the package (`npm run lint`).
 - `packages/iroh-do`:
   - `IrohDurableObject` gained `schedule`, `cancel`, `onAlarm`, `appStatus`,
     `endpointStatus` and `static app`.
@@ -405,11 +420,15 @@ Sizes of `npm run build` in `examples/ts-deployment`, from `just bundle-info-ts`
 
 | File | Raw | gzip -9 |
 |---|---|---|
-| `worker.js` (not minified) | 164,995 B | 34,360 B |
-| `<hash>-iroh_do_wasm_bg.wasm` | 4,473,484 B | 1,482,299 B |
+| `worker.js` (not minified), first chat class | 164,995 B | 34,360 B |
+| `worker.js` (not minified), rewritten chat class | 173,326 B | 36,233 B |
+| `<hash>-iroh_do_wasm_bg.wasm`, first measurement | 4,473,484 B | 1,482,299 B |
+| `<hash>-iroh_do_wasm_bg.wasm`, with the rewritten class | 4,481,587 B | 1,481,207 B |
 
-The wasm is step 1's module unchanged. `worker.js` grew by 47,586 B over step 1's
-117,409 B; the chat app and the registry are TypeScript.
+The first `worker.js` grew by 47,586 B over step 1's 117,409 B; the chat app and the
+registry are TypeScript. The rewrite added 8,331 B. `crates/iroh-do-wasm` and its path
+dependencies did not change between the two wasm measurements; why the builds differ in
+size was not investigated.
 
 ## Step 2: the stock client's lifecycle under `wrangler dev`
 
@@ -467,6 +486,12 @@ answered as the Rust app does. That session sent a line, `/count`, `/log 2`, `/c
 and `/log x`, and the last two returned `error: usage /callback <secs>, secs <= 50` and
 `error: usage /log [n], n <= 50`. `GET /endpoints.json`, `GET /` and `GET /status/<E>`
 listed the endpoint with app `chat`, its label and the join hint `iroh-do-chat <E>`.
+
+The same command against the rewritten class (`wrangler dev --local` on port 8821, after
+the fixture run below on the same server) gave the same 34 rows and `result: PASS`, with
+the session 1 connect in 12.7 ms, the session 2 connect after hibernation in 14.4 ms, and
+the dial-back 6.5 ms after its scheduled time. Over both runs the server logged 933 events
+at level `info` and none at `warn` or `error`.
 
 ## Step 2: router and registry in Miniflare
 
@@ -530,20 +555,45 @@ ALL PASS
 ```
 
 The reuse check shows that a dialed room connection stays open after the delivery that
-dialed it: `#serveRoom` keeps the connection's handler pending until it closes. Each
-connection was reused for the second line within `t_idle`.
+dialed it: the room keeps serving the connection, with its handler pending, until it
+closes. Each connection was reused for the second line within `t_idle`.
+
+The test is now `test/room.test.mjs`, run by Vitest with the same checks as `expect`
+assertions (the counters are camelCase: `deliveriesOk`, `deliveryDials`, ...). Against the
+rewritten class:
+
+```
+ ✓ … > two listeners: bo's join is delivered to ana 1401ms
+ ✓ … > Warm with both members present, then a prompt forced eviction 12213ms
+ ✓ … > deliveries dial the members back, then reuse the dialed connections 3207ms
+ ✓ … > every member saw the same events, chained by prev 6ms
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+```
 
 ## Step 2: differences from the Rust chat app
 
 - `app` in the status is `chat`, from `static app`. The node's own status reports the wasm
   library's placeholder `ts`, which the class replaces. The status keys are sorted, as
   serde_json writes them.
-- The app's counters (`ChatStats`) are per node build, not per construction. After a
-  wasm panic a node is rebuilt without a new construction, and the counters and the rate
-  limiter restart. The counters are not on the wire. Tests read them with the RPC
-  `chatStats()`.
-- Debug-level `tracing` lines of the Rust app, such as "delivery stream: …", are not
-  written. They are below the default `LOG_LEVEL`.
+- The counters (`ChatStats`) and the rate limiter are fields of the object, so they last
+  for one construction, as the Rust app's do. A node rebuilt after a wasm panic keeps
+  them; only the connections kept for reuse are dropped, since they belonged to the old
+  node. The counters are not on the wire. Tests read them with the RPC `chatStats()`.
+- Storage failures are not turned into defaults. The Rust app logs `chat_sql_failed` and
+  goes on with an empty result or 0. The class answers a room request whose storage fails
+  with `storage error` and logs `room_request_failed` with the cause; a ctl request whose
+  storage fails ends its stream, and the rejection is logged as `task_failed` with its
+  stack. A member row and the event that goes with it (`join`, `nick`, `part`) are written
+  in one transaction, so a failure leaves neither.
+- JSON lines come from `JSON.stringify`, which escapes control characters as `\n`, `\t` and
+  so on where the Rust app writes `\u000a`. PROTOCOL.md allows both.
+- When the notify stream fails, the dial-back closes the connection at once instead of
+  waiting up to 5 s for the peer to close it.
+- Log targets are `chat`, `chat.room`, `chat.ctl`, `chat.echo` and `chat.notify`, not the
+  Rust module paths. Debug-level `tracing` lines of the Rust app, such as "delivery
+  stream: …", have no counterpart; they are below the default `LOG_LEVEL`.
 - The registry, and so routing, is per deployment. Endpoints minted in step 1's `iroh-ts`
   are not registered and are not reachable after step 2 (design note 013, Consequences).
 
@@ -589,6 +639,19 @@ The `wrangler dev` log for the run shows 12 mints, 130 `room_request`, 56
 TypeScript server, not the native harness. Without the two variables the same
 test runs against the Rust app, where it also passes.
 
+After the protocol rules were rewritten (PROTOCOL.md, "Changes"), two steps of
+`02-history-and-since.json` were re-recorded from the Rust app and a 13th fixture,
+`13-arguments.json`, was added. All 13 passed against the rewritten class under
+`wrangler dev` on port 8821:
+
+```
+test fixtures ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 24.12s
+```
+
+That run logged 13 mints, 140 `room_request`, 57 `room_delivery` and 184 each of
+`conn_open` and `conn_close`.
+
 ## Reproduce
 
 ```sh
@@ -612,14 +675,18 @@ cargo run -p iroh-do-echo-client -- <E> hello --local 8799
 
 # Step 2: the deployment with both apps.
 cargo build -p iroh-do-chat -p iroh-do-test-peer
+cd ../../chat/server                     # examples/chat/server
+npm run check && npm run lint && npm test   # tsc (strict), Biome, Vitest unit tests
 cd ../../ts-deployment                   # examples/ts-deployment
-npm run check                            # also type-checks examples/chat/server
+npm run check
 npm run build                            # or, from the root: just build-ts
-npm test                                 # router-test.mjs, room-test.mjs (about 70 s)
+npm test                                 # router-test.mjs, then room.test.mjs under Vitest (about 70 s)
 npx wrangler dev --local --ip 127.0.0.1 --port 8799 --var ADMIN_TOKEN:local
 curl -s --resolve admin.localhost:8799:127.0.0.1 -X POST -H "Authorization: Bearer local" \
   -H 'Content-Type: application/json' --data-binary '{"app":"chat"}' http://admin.localhost:8799/mint
 cargo run -p iroh-do-chat -- --local --local-port 8799 lifecycle <E> --room
+# The golden fixtures against that server (from the repository root):
+FIXTURE_TARGET=8799 FIXTURE_ADMIN_TOKEN=local cargo test -p iroh-do-chat-app --test fixtures fixtures
 ```
 
 `npm test` in `packages/iroh-do` leaves `pkg/` built with `test-panic`; `npm run build` in
