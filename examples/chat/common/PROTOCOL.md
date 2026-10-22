@@ -377,6 +377,12 @@ the dial-back.
 - Anything about nicks outside the rule above; the object does not normalize
   Unicode because it accepts only ASCII nicks.
 - That history reaches back further than the retention above.
+- That a nick is ever released by a member that does not `/quit`. A member stays
+  joined, and holds its nick, until it sends `/quit`; a client that stops without
+  it, or a key that is never used again, keeps its nick for the life of the
+  object. Member rows are never removed, and the servers read every joined member
+  for each stored event and each nick check, so a room that many peers join
+  without quitting grows slower per request.
 
 ## Differences from design note 008 and between implementations
 
