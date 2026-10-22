@@ -82,6 +82,29 @@ variable "registry_binding_name" {
   default     = "REGISTRY"
 }
 
+variable "extra_endpoint_classes" {
+  description = "Further endpoint classes of a deployment with several apps (the TypeScript host, design note 013), bound beside endpoint_class_name."
+  type = list(object({
+    class_name   = string
+    binding_name = string
+  }))
+  default = []
+}
+
+variable "migrations" {
+  description = "The Durable Object migrations, oldest first: each a tag and the classes it creates. null means one migration, v1, creating every bound class. Append a step to add classes to a live script; never change or remove one that was applied."
+  type = list(object({
+    tag                = string
+    new_sqlite_classes = list(string)
+  }))
+  default = null
+
+  validation {
+    condition     = var.migrations == null || (length(var.migrations) > 0 && length(distinct([for m in coalesce(var.migrations, []) : m.tag])) == length(coalesce(var.migrations, [])))
+    error_message = "migrations must be null or a non-empty list with distinct tags."
+  }
+}
+
 variable "admin_token" {
   description = "Bearer token for POST https://admin.<hostname_prefix>.<zone_name>/mint."
   type        = string

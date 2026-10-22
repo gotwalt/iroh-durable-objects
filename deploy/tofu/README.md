@@ -56,21 +56,37 @@ module "iroh_ts" {
   zone_name       = "example.com"
   hostname_prefix = "iroh-ts"
   script_name     = "iroh-ts"
-  worker_manifest = "build/echo-ts/manifest.json"
+  worker_manifest = "build/iroh-ts/manifest.json"
   admin_token     = var.admin_token_ts
 
-  endpoint_class_name   = "Echo"    # default "endpoint"
-  endpoint_binding_name = "ENDPOINTS"
-  registry_class_name   = null      # default "registry"; null binds no registry
+  endpoint_class_name    = "Echo" # default "endpoint"
+  endpoint_binding_name  = "ENDPOINTS"
+  extra_endpoint_classes = [{ class_name = "Chat", binding_name = "CHAT" }]
+  registry_class_name    = "Registry" # default "registry"; null binds no registry
+  registry_binding_name  = "REGISTRY"
+  migrations = [
+    { tag = "v1", new_sqlite_classes = ["Echo"] },
+    { tag = "v2", new_sqlite_classes = ["Chat", "Registry"] },
+  ]
 }
 ```
 
 `endpoint_class_name`, `endpoint_binding_name`, `registry_class_name` and
 `registry_binding_name` default to the Rust deployment's `endpoint`,
-`ENDPOINTS`, `registry` and `REGISTRY`. The migration lists the classes that
-are bound. Several instances of the module can share a root module and a zone
-if each has its own `hostname_prefix` and `script_name`; each creates its own
-certificate pack.
+`ENDPOINTS`, `registry` and `REGISTRY`. `extra_endpoint_classes` binds further
+endpoint classes, for a deployment with several apps (design note 013).
+
+`migrations` lists the Durable Object migrations, oldest first. Unset, there is
+one, `v1`, creating every bound class, as before. To add a class to a live
+script, append a step with a new tag; never change or remove a step that was
+applied. The module reads the live script's tag and sends only the steps after
+it: one step as `old_tag`/`new_tag`/`new_sqlite_classes`, several (a new
+script) as `steps`. The plan fails if the live tag is not in the list, or if a
+bound class is created by no step.
+
+Several instances of the module can share a root module and a zone if each has
+its own `hostname_prefix` and `script_name`; each creates its own certificate
+pack.
 
 The other inputs and their defaults are in `variables.tf`; the outputs
 (`admin_url`, `endpoint_url_template`, `zone_suffix`, `script_name`) in
@@ -85,8 +101,8 @@ encrypt its state: the admin token is stored there
   `worker_manifest`, the modules the manifest lists), the bindings `ENDPOINTS`
   (the `endpoint` namespace), `REGISTRY` (the `registry` namespace; omitted when
   `registry_class_name` is null), `ADMIN_TOKEN` (secret), `ZONE_SUFFIX`,
-  `BUNDLE_SHA256`, `PKARR_RELAY` and `LOG_LEVEL`, the Durable Object migration
-  `v1` (`new_sqlite_classes` lists the bound classes), and Workers Logs and
+  `BUNDLE_SHA256`, `PKARR_RELAY` and `LOG_LEVEL`, the Durable Object migrations
+  (by default `v1`, whose `new_sqlite_classes` lists the bound classes), and Workers Logs and
   traces (`observability`). The binding and class names given here are the
   defaults; the `*_binding_name` and `*_class_name` variables change them.
 - `cloudflare_dns_record.wildcard`: a proxied `AAAA 100::` record for
@@ -141,12 +157,14 @@ instead.
 
 `examples/deployment/infra/` instantiates the module twice: `module.iroh_do`,
 the Rust bundle from `build/worker/` at `*.iroh-do.<zone>`, and
-`module.iroh_ts`, the TypeScript echo server from `build/echo-ts/manifest.json`
-at `*.iroh-ts.<zone>` (design note 013). They are separate scripts with
-separate Durable Object namespaces, certificates and admin tokens. To change
-the TypeScript instance's class or binding name, edit `module "iroh_ts"` in
-`main.tf`. `just build-ts` builds `build/echo-ts/`, and `just plan` and
-`just apply` cover both modules; they need that directory to exist.
+`module.iroh_ts`, the TypeScript deployment (`examples/ts-deployment`: the
+chat and echo classes and the registry) from `build/iroh-ts/manifest.json` at
+`*.iroh-ts.<zone>` (design note 013). They are separate scripts with separate
+Durable Object namespaces, certificates and admin tokens. The classes and
+bindings in `module "iroh_ts"` must match `examples/ts-deployment/wrangler.toml`.
+`just build-ts` builds `build/iroh-ts/`, and `just plan` and `just apply` cover
+both modules; they need that directory to exist. `TS=1 just mint chat` mints in
+the TypeScript deployment.
 
 Run everything through the `justfile` at the repository root. It passes secrets
 through the environment and never prints them.
@@ -264,11 +282,21 @@ refreshing the route reads it back with `GET /zones/{zone}/workers/routes/{id}`,
 which returns 403 (code 10000) unless the token holds Workers Routes: Edit on
 the zone, even when listing and creating routes succeed.
 
-Verified by reading the provider (5.28.1, `internal/services/workers_script/`),
-not by a deploy: on create the provider sends `migrations` from the
-configuration, and `ignore_changes = [migrations]` keeps the plan after the
-first apply empty once the configuration stops sending it. Before design note
-012, `just up` ran a second apply to clear that diff.
+Verified by reading the provider (5.28.1, `internal/services/workers_script/`
+`resource.go`) and OpenTofu (1.13.1, `internal/tofu/node_resource_abstract_instance.go`),
+not by a deploy: on create and on update the provider sends `migrations` from
+the configuration and stores that value in state. OpenTofu applies with the
+configuration as written, not with `ignore_changes` applied, and then requires
+the stored value to equal the planned one. Design note 012 had added
+`ignore_changes = [migrations]` to hide the diff left after the first apply,
+when the configuration stops sending the migration. With it, the plan keeps the
+old value, so any later update of a script whose state holds a migration
+(`module.iroh_ts`, created with `v1`) would fail with "Provider produced
+inconsistent result after apply" after the API call had succeeded. Step 2 of
+design note 013 removed it. As before note 012, an apply that sends a migration
+leaves a diff (`migrations` to null) that one more apply clears.
+`module.iroh_do`'s state holds null (design note 011, phase 5), so its plan is
+unchanged.
 
 Not yet verified:
 
