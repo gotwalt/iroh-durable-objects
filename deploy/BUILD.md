@@ -14,7 +14,13 @@ deploy/build-worker.sh        # or: just build-worker
 
 Requirements: Rust 1.93.0 with `wasm32-unknown-unknown` (`rust-toolchain.toml`),
 `worker-build` 0.8.7 (`cargo install worker-build --version 0.8.7 --locked`),
-node for the import check, and on macOS Homebrew LLVM.
+node for the import check, and on macOS Homebrew LLVM (`brew install llvm`).
+The TypeScript bundle also needs `wasm-bindgen-cli` 0.2.129 (`cargo install
+wasm-bindgen-cli --version 0.2.129 --locked`) and `npm ci` at the repository
+root; `just build-ts` runs `npm ci` when `node_modules` is missing or older than
+the lockfile. Neither build script pins LLVM. The one used here, when this was
+written (2026-10-22), was Homebrew LLVM 23.1.1 (`clang --version`);
+`packages/iroh-do/build-wasm.sh` builds with `cargo build --locked`.
 
 On macOS the script sets `CC_wasm32_unknown_unknown` and
 `AR_wasm32_unknown_unknown` to Homebrew's `clang` and `llvm-ar`. ring compiles C
@@ -59,18 +65,24 @@ build/iroh-ts/
 
 ```json
 { "main_module": "worker.js",
-  "modules": [ { "name": "<hash>-iroh_do_wasm_bg.wasm",
+  "modules": [ { "name": "worker.js", "path": "worker.js",
+                 "content_type": "application/javascript+module" },
+               { "name": "<hash>-iroh_do_wasm_bg.wasm",
                  "path": "<hash>-iroh_do_wasm_bg.wasm",
                  "content_type": "application/wasm" } ],
   "bundle_sha256": "<hex>" }
 ```
 
-`path` is relative to the manifest's directory; the main module is listed
-only as `main_module`. `name` is the part name OpenTofu uploads and must equal
-the import specifier in the main module without its `./`. `deploy/tofu` reads
-the manifest through its `worker_manifest` input (`deploy/tofu/README.md`),
-binds `bundle_sha256` as `BUNDLE_SHA256`, and checks the names against the main
-module at plan time. `just bundle-info-ts` prints the hash and sizes.
+`path` is relative to the manifest's directory. `main_module` names the main
+module, and `modules` lists every file of the bundle including it, first
+(`packages/iroh-do/scripts/bundle.mjs` writes the manifest). `name` is the module's
+name as the main module imports it, without `./`, and the part name OpenTofu
+uploads. `deploy/tofu` reads the manifest through its `worker_manifest` input
+(`deploy/tofu/README.md`): it uploads the file named by `main_module` as the
+script's content and every other entry of `modules` as a part, binds
+`bundle_sha256` as `BUNDLE_SHA256`, and checks the part names against the main
+module at plan time. `just bundle-info-ts` prints the hash and the size of each
+module.
 
 The worker-build instructions above stay in force for the Rust deployment
 (`module.iroh_do`) until it is retired.

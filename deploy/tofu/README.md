@@ -40,9 +40,10 @@ The bundle is given in one of two ways; exactly one input must be set.
 - `worker_bundle_dir`: the directory `deploy/build-worker.sh` writes, with
   `index.js` and `index_bg.wasm`. The Rust deployment uses this.
 - `worker_manifest`: the path to the `manifest.json` of a wrangler dry-run
-  outdir (format in `deploy/BUILD.md`). The main module, one uploaded part per
-  entry of `modules` (keyed by `name`, which wrangler derives from the content
-  hash) and the `BUNDLE_SHA256` binding come from it. Paths in the manifest are
+  outdir (format in `deploy/BUILD.md`). It names the main module, which is also
+  listed in `modules`; the module uploads that file as the script's content and
+  every other entry of `modules` as a part (keyed by `name`, which wrangler
+  derives from the content hash). The `BUNDLE_SHA256` binding comes from it too. Paths in the manifest are
   relative to its directory. A precondition on the script fails the plan unless
   the main module imports each part as `"./<name>"`, because the provider does
   not check part names and a mismatch would fail only at apply.
@@ -175,7 +176,7 @@ just up       # build, tofu init + apply, wait until the certificate serves
 just mint chat   # POST https://admin.iroh-do.<zone>/mint, writes E to .demo/endpoint
 just demo     # iroh-do-chat lifecycle <E>
 just mint echo && just echo "$(cat .demo/endpoint)"
-just plan     # should report zero diff
+just plan     # reports zero diff after `just up`
 just down     # typed confirmation, then tofu destroy (deletes every identity)
 ```
 
@@ -183,9 +184,12 @@ just down     # typed confirmation, then tofu destroy (deletes every identity)
 `.demo/admin_token` becomes `TF_VAR_admin_token`; it authorizes `POST /mint`
 and nothing else, and there is no endpoint that returns keys.
 `.demo/admin_token_ts` is the same for `module.iroh_ts`
-(`TF_VAR_admin_token_ts`); `just plan`, `apply` and `down` create it if missing.
+(`TF_VAR_admin_token_ts`). Only `just up` creates these files; `just plan`,
+`apply`, `down` and `TS=1` commands fail with a message when one is missing or
+empty, so that a lost file does not silently rotate a token into a plan.
 `.demo/state_passphrase` becomes `TF_VAR_state_passphrase` and encrypts state
-and plan files. To run `tofu` by hand, export both variables the same way.
+and plan files. To run `tofu` by hand, export all three variables the same way:
+`TF_VAR_admin_token`, `TF_VAR_admin_token_ts` and `TF_VAR_state_passphrase`.
 `just infra-check` runs `fmt` and `validate` without credentials.
 
 ### Logs
@@ -294,14 +298,22 @@ old value, so any later update of a script whose state holds a migration
 (`module.iroh_ts`, created with `v1`) would fail with "Provider produced
 inconsistent result after apply" after the API call had succeeded. Step 2 of
 design note 013 removed it. As before note 012, an apply that sends a migration
-leaves a diff (`migrations` to null) that one more apply clears.
+leaves a diff (`migrations` to null) that one more apply clears. `just up`
+makes that second apply itself, so its end state has no diff. The second apply
+is a full script upload, which creates a new deployment; Cloudflare restarts the
+script's live Durable Objects on a new deployment and keeps their storage. That
+relies on Cloudflare's documented behaviour and has not been tested here.
 `module.iroh_do`'s state holds null (design note 011, phase 5), so its plan is
 unchanged.
 
 Not yet verified:
 
 - that the five permissions above are sufficient on their own;
-- a first deploy on a fresh account with this module.
+- a first deploy on a fresh account with this module;
+- the `steps` form of the migration, sent when a new script has several pending
+  steps (`module.iroh_ts` on a fresh account): the provider accepts it, but no
+  apply has sent it to the API;
+- that the second apply of `just up` leaves Durable Object storage intact.
 
 Certificate issuance takes minutes. `just up` polls `https://admin.<suffix>/mint`
 for up to 15 minutes. While it waits, the pack's status is in
