@@ -9,6 +9,8 @@ description = "Runtime-agnostic iroh endpoint node for Durable Objects: lifecycl
 [dependencies]
 iroh = { workspace = true, features = ["unstable-custom-transports"] }
 iroh-ingress-transport = { path = "../iroh-ingress-transport" }
+# The pkarr record (`pkarr`). iroh depends on it already.
+iroh-dns = { version = "=1.4.0", default-features = false }
 n0-future = "0.3"
 bytes = "1"
 tracing = "0.1"

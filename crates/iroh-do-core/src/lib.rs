@@ -70,6 +70,7 @@ mod app;
 mod conn;
 mod ctx;
 mod endpoint;
+pub mod pkarr;
 mod sql;
 
 use std::{
@@ -94,7 +95,7 @@ use tracing::{Instrument, Span, debug, error, info, info_span, warn};
 
 use crate::{app::Registered, conn::Activity as ConnActivity};
 pub use crate::{
-    app::{App, AppEntry, DynApp, Idle, Protocols},
+    app::{App, AppEntry, DynApp, Idle, LocalProtocolHandler, Protocols},
     conn::{Activity, CLOSE_OK, StreamGuard},
     ctx::{APP_KEY_PREFIX, ConnectError, Ctx},
     sql::{Row, Sql, SqlError, Value},
@@ -192,6 +193,13 @@ pub trait Host: FrameSink {
     ///
     /// A host that persists the count passes it back as [`Config::endpoint_builds`].
     fn endpoint_built(&self) {}
+
+    /// Called each time the node has closed its endpoint after [`Config::t_linger`].
+    ///
+    /// Between [`Host::endpoint_built`] and this call the node has QUIC state that no storage
+    /// can restore. A host that records the interval can tell, after an eviction, whether
+    /// connections were lost with it.
+    fn endpoint_closed(&self) {}
 }
 
 /// Lifecycle state of a node; see the [crate docs](crate#lifecycle).
@@ -233,6 +241,8 @@ pub struct Stats {
     pub teardown_leftover_tasks: Option<usize>,
     /// Connections the node closed as idle or silent.
     pub idle_closes: u64,
+    /// Streams counted open by [`Activity::stream`] guards, over all open connections.
+    pub open_streams: usize,
     /// Datagram frames dropped because the pre-activation queue was full.
     pub preactivation_dropped: u64,
 }
@@ -293,6 +303,8 @@ pub(crate) struct Shared {
     app: OnceLock<Arc<dyn DynApp>>,
     created: Instant,
     tasks: AtomicUsize,
+    /// See [`Stats::open_streams`].
+    open_streams: Arc<AtomicUsize>,
     inner: Mutex<Inner>,
     activities: Mutex<HashMap<usize, Arc<ConnActivity>>>,
     /// Parent of every node task, carrying `endpoint` (z-base-32) into their events.
@@ -324,6 +336,7 @@ impl Node {
             app: OnceLock::new(),
             created: Instant::now(),
             tasks: AtomicUsize::new(0),
+            open_streams: Arc::new(AtomicUsize::new(0)),
             inner: Mutex::new(Inner {
                 phase: Phase::Idle,
                 state: State::Cold,
@@ -500,6 +513,7 @@ impl Shared {
     pub(crate) fn stats(&self) -> Stats {
         let mut s = self.lock().stats.clone();
         s.tasks = self.tasks.load(Ordering::SeqCst);
+        s.open_streams = self.open_streams.load(Ordering::SeqCst);
         s
     }
 
@@ -750,6 +764,7 @@ impl Shared {
         );
         inner.stats.endpoint_closes += 1;
         inner.stats.teardown_leftover_tasks = Some(leftover);
+        self.host.endpoint_closed();
         inner.phase = Phase::Idle;
         if !inner.queue.is_empty() || !inner.waiters.is_empty() {
             debug!("work arrived while closing: re-activating");

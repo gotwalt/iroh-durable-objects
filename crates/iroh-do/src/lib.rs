@@ -68,7 +68,6 @@
 #![deny(missing_docs)]
 
 pub mod log;
-pub mod pkarr;
 pub mod registry;
 pub mod route;
 pub mod schema;
@@ -78,6 +77,10 @@ mod glue;
 
 /// The app API, re-exported so that an app needs only this crate. `iroh_do_core` has the rest.
 pub use iroh_do_core::{self as core, App, AppEntry, Ctx, Protocols};
+
+/// The pkarr record, now in `iroh-do-core` so that the TypeScript host's wasm library can
+/// build it too.
+pub use iroh_do_core::pkarr;
 
 #[cfg(target_arch = "wasm32")]
 pub use glue::{Object, Registry, handle};

@@ -14,6 +14,10 @@
 //! report. Reports also add a distinction QUIC statistics cannot make: a connection with a
 //! stream open (counted by [`Activity::stream`] guards) is closed only after
 //! [`Config::t_silent`](crate::Config::t_silent).
+//!
+//! When the connection closes, its guards stop counting. A guard owned by a garbage-collected
+//! host (a JavaScript stream object) can outlive its connection by an unspecified time, and
+//! must not be counted as an open stream after the connection is gone.
 
 use std::{
     sync::{
@@ -23,7 +27,7 @@ use std::{
     time::Duration,
 };
 
-use iroh::endpoint::{Connection, ConnectionStats, Incoming, VarInt};
+use iroh::endpoint::{Connection, ConnectionError, ConnectionStats, Incoming, VarInt};
 use n0_future::time::Instant;
 use tracing::{debug, info, warn};
 
@@ -35,18 +39,25 @@ pub const CLOSE_OK: VarInt = VarInt::from_u32(0);
 /// Application activity on one connection, for the idle close.
 #[derive(Debug)]
 pub struct Activity {
-    open_streams: AtomicUsize,
+    /// Open streams; `None` once the connection has closed, after which guards count nothing.
+    open_streams: Mutex<Option<usize>>,
+    /// Open streams of every connection of the node ([`Stats::open_streams`](crate::Stats)).
+    node_streams: Arc<AtomicUsize>,
     last: Mutex<Instant>,
     /// Whether the handler has reported activity; from then on, frame counts are ignored.
     reported: AtomicBool,
+    /// The reason of the node's own close ([`Activity::close`]), for the `conn_close` event.
+    closed_by_node: Mutex<Option<&'static str>>,
 }
 
 impl Activity {
-    fn new() -> Arc<Self> {
+    fn new(node_streams: Arc<AtomicUsize>) -> Arc<Self> {
         Arc::new(Self {
-            open_streams: AtomicUsize::new(0),
+            open_streams: Mutex::new(Some(0)),
+            node_streams,
             last: Mutex::new(Instant::now()),
             reported: AtomicBool::new(false),
+            closed_by_node: Mutex::new(None),
         })
     }
 
@@ -61,17 +72,45 @@ impl Activity {
         *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
     }
 
-    /// Counts an open stream until the guard is dropped, and records activity at both ends.
+    /// Closes `conn` with [`CLOSE_OK`] and `reason`, unless it is already closed, and logs
+    /// `reason` in its `conn_close` event.
+    pub fn close(&self, conn: &Connection, reason: &'static str) {
+        if conn.close_reason().is_some() {
+            return;
+        }
+        *self
+            .closed_by_node
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(reason);
+        conn.close(CLOSE_OK, reason.as_bytes());
+    }
+
+    fn streams(&self) -> std::sync::MutexGuard<'_, Option<usize>> {
+        self.open_streams.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Counts an open stream until the guard is dropped or the connection closes, and records
+    /// activity at both ends.
     pub fn stream(self: &Arc<Self>) -> StreamGuard {
-        self.open_streams.fetch_add(1, Ordering::SeqCst);
+        if let Some(n) = self.streams().as_mut() {
+            *n += 1;
+            self.node_streams.fetch_add(1, Ordering::SeqCst);
+        }
         self.touch();
         StreamGuard(self.clone())
+    }
+
+    /// Stops counting this connection's streams; called once the connection has closed.
+    fn release(&self) {
+        if let Some(n) = self.streams().take() {
+            self.node_streams.fetch_sub(n, Ordering::SeqCst);
+        }
     }
 
     /// Returns the time left until the connection is closed for inactivity, and the close
     /// reason: `idle` with no stream open (limit `idle`), `silent` otherwise (limit `silent`).
     fn close_deadline(&self, idle: Duration, silent: Duration) -> (Duration, &'static str) {
-        let (limit, reason) = if self.open_streams.load(Ordering::SeqCst) > 0 {
+        let (limit, reason) = if self.streams().is_some_and(|n| n > 0) {
             (silent, "silent")
         } else {
             (idle, "idle")
@@ -81,13 +120,16 @@ impl Activity {
     }
 }
 
-/// Counts an open stream for the idle close until dropped.
+/// Counts an open stream for the idle close until dropped or until its connection closes.
 #[derive(Debug)]
 pub struct StreamGuard(Arc<Activity>);
 
 impl Drop for StreamGuard {
     fn drop(&mut self) {
-        self.0.open_streams.fetch_sub(1, Ordering::SeqCst);
+        if let Some(n) = self.0.streams().as_mut() {
+            *n = n.saturating_sub(1);
+            self.0.node_streams.fetch_sub(1, Ordering::SeqCst);
+        }
         self.0.touch();
     }
 }
@@ -151,7 +193,7 @@ impl Shared {
         let alpn = String::from_utf8_lossy(conn.alpn()).into_owned();
         let idle = self.idle_limit(conn.alpn());
         let silent = self.config().t_silent;
-        let activity = Activity::new();
+        let activity = Activity::new(self.open_streams.clone());
         self.activities().insert(id, activity.clone());
         self.connection_opened();
         let busy = self.busy();
@@ -176,7 +218,7 @@ impl Shared {
                     }
                     let (left, reason) = activity.close_deadline(idle, silent);
                     if left.is_zero() {
-                        conn.close(CLOSE_OK, reason.as_bytes());
+                        activity.close(&conn, reason);
                         this.record_idle_close();
                         return reason.to_string();
                     }
@@ -195,11 +237,19 @@ impl Shared {
                 }
             };
             let closed = async {
-                closed
-                    .await
-                    .map_or_else(|| "dropped".to_string(), |c| c.reason.to_string())
+                match closed.await {
+                    None => "dropped".to_string(),
+                    Some(c) if matches!(c.reason, ConnectionError::LocallyClosed) => activity
+                        .closed_by_node
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .unwrap_or("closed")
+                        .to_string(),
+                    Some(c) => c.reason.to_string(),
+                }
             };
             let reason = n0_future::future::race(watch, closed).await;
+            activity.release();
             this.activities().remove(&id);
             this.connection_closed();
             drop(busy);

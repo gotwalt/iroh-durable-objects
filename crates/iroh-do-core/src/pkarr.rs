@@ -1,13 +1,19 @@
-//! Discovery record for the DO's EndpointId (spec §5.9, note 004).
+//! The endpoint's discovery record (spec §5.9, design note 004).
 //!
 //! Built with iroh's own construction (`EndpointInfo::to_pkarr_signed_packet`,
 //! the call `PkarrPublisher` makes in `iroh-1.4.0/src/address_lookup/pkarr.rs`),
 //! so the format matches stock resolvers exactly. Publishing is a single
 //! `PUT <relay>/<z32>`; because a stale PUT also answers 204, success is
 //! confirmed by a `GET` that returns our record (note 004 §2).
+//!
+//! This module builds and checks the record; the host does the HTTP requests, the retries
+//! and the republish schedule.
 
-use iroh_base::{RelayUrl, SecretKey};
+use iroh::{RelayUrl, SecretKey};
 use iroh_dns::{endpoint_info::EndpointInfo, pkarr::SignedPacket};
+
+/// Default pkarr relay (`iroh-1.4.0/src/address_lookup/pkarr.rs:127`, `N0_DNS_PKARR_RELAY_PROD`).
+pub const DEFAULT_PKARR_RELAY: &str = "https://dns.iroh.link/pkarr";
 
 /// Record TTL, same as iroh's `DEFAULT_PKARR_TTL` (`iroh-1.4.0/src/address_lookup/pkarr.rs:143`).
 pub const PKARR_TTL_SECS: u32 = 30;
@@ -38,7 +44,7 @@ pub enum BuildError {
     Encode,
 }
 
-/// Build the relay-only record for `secret` pointing at `relay_url`.
+/// Builds the relay-only record for `secret` pointing at `relay_url`.
 pub fn build_publish(
     secret: &SecretKey,
     relay_url: &str,
@@ -60,7 +66,7 @@ pub fn build_publish(
     })
 }
 
-/// Check a GET response body: valid signature for `secret.public()`, at
+/// Checks a GET response body: valid signature for `secret.public()`, at
 /// least as recent as what we published, and advertising `relay_url`.
 pub fn confirm(secret: &SecretKey, body: &[u8], min_timestamp_us: u64, relay_url: &str) -> bool {
     let Ok(pkt) = SignedPacket::from_relay_payload(&secret.public(), body) else {

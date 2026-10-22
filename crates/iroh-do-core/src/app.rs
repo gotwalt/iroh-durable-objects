@@ -7,7 +7,7 @@ use iroh::{
     protocol::{AcceptError, ProtocolHandler},
 };
 
-use crate::Ctx;
+use crate::{Ctx, MaybeSend};
 
 /// An application hosted by the node.
 ///
@@ -145,7 +145,42 @@ impl Idle {
     }
 }
 
+// `Send` natively, where the node's tasks run on tokio's multi-threaded runtime; not on
+// wasm32, where they run on the one thread with `spawn_local`. See [`LocalProtocolHandler`].
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+#[cfg(all(target_family = "wasm", target_os = "unknown"))]
+type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
+
+/// A protocol handler whose `accept` future is [`MaybeSend`]: `Send` natively, unbounded on
+/// wasm32.
+///
+/// iroh's [`ProtocolHandler::accept`] must return a `Send` future on every target, and a
+/// future that awaits a JavaScript promise is not `Send`. The node spawns handler futures with
+/// `spawn_local` on wasm32, so it does not need the bound there; a host whose handlers call
+/// into JavaScript registers them with [`Protocols::accept_local`] instead.
+pub trait LocalProtocolHandler: Send + Sync + std::fmt::Debug + 'static {
+    /// Handles one accepted connection, as [`ProtocolHandler::accept`] does.
+    fn accept(&self, conn: Connection) -> impl Future<Output = Result<(), AcceptError>> + MaybeSend;
+}
+
+/// Adapts a [`LocalProtocolHandler`] to [`DynHandler`]. A wrapper rather than a second blanket
+/// impl, which would overlap the one for [`ProtocolHandler`].
+struct Local<H>(H);
+
+impl<H: LocalProtocolHandler> DynHandler for Local<H> {
+    fn on_accepting(&self, accepting: Accepting) -> BoxFuture<'_, Result<Connection, AcceptError>> {
+        Box::pin(async move { Ok(accepting.await?) })
+    }
+
+    fn accept(&self, conn: Connection) -> BoxFuture<'_, Result<(), AcceptError>> {
+        Box::pin(self.0.accept(conn))
+    }
+
+    fn shutdown(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async {})
+    }
+}
 
 /// A [`ProtocolHandler`] behind a pointer.
 pub(crate) trait DynHandler: Send + Sync + 'static {
@@ -209,6 +244,24 @@ impl Protocols {
             Registered {
                 handler: Arc::new(handler),
                 idle: Some(idle),
+            },
+        );
+        self
+    }
+
+    /// Like [`Protocols::accept`] for a [`LocalProtocolHandler`], with an optional idle
+    /// limit as in [`Protocols::accept_with`].
+    pub fn accept_local(
+        &mut self,
+        alpn: impl AsRef<[u8]>,
+        handler: impl LocalProtocolHandler,
+        idle: Option<Idle>,
+    ) -> &mut Self {
+        self.map.insert(
+            alpn.as_ref().to_vec(),
+            Registered {
+                handler: Arc::new(Local(handler)),
+                idle,
             },
         );
         self
