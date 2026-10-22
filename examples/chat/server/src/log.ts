@@ -8,6 +8,7 @@ export type Target = "chat" | "chat.room" | "chat.ctl" | "chat.echo" | "chat.not
 export type EventName =
   | "room_request"
   | "room_request_failed"
+  | "room_queue_failed"
   | "room_event"
   | "room_delivery"
   | "room_dial_failed"

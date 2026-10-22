@@ -3,6 +3,7 @@
 // on a stream the object opens, to show that it can open streams on a connection the peer
 // dialed.
 import type { BiStream, Connection, RecvStream, SendStream } from "iroh-do";
+import { rethrowTrap, unlessTrap } from "./errors";
 import { logEntry } from "./events";
 import { LineSplitter } from "./lines";
 import { background, errorText, type Logger } from "./log";
@@ -44,7 +45,7 @@ export class Ctl {
     };
     for (;;) {
       // acceptBi rejects once the connection is closed, by either side or when idle.
-      const stream = await conn.acceptBi().catch(() => null);
+      const stream = await conn.acceptBi().catch(unlessTrap(null));
       if (stream === null) return;
       background(this.#serveStream(peer, stream, afterFirstReply), this.#log, "ctl stream");
     }
@@ -57,6 +58,7 @@ export class Ctl {
       try {
         line = await lines.next();
       } catch (error) {
+        rethrowTrap(error);
         // A line the protocol refuses (LineError) or a failed read: report it and stop reading
         // this stream, as PROTOCOL.md requires.
         if (await write(stream.send, `error: ${errorText(error)}\n`)) await finish(stream.send);
@@ -100,7 +102,8 @@ export class Ctl {
       const stream = await conn.openUni();
       await stream.writeAll(encodeUtf8(ctlHello(this.#options.endpointId(), peer)));
       await stream.finish();
-    } catch {
+    } catch (error) {
+      rethrowTrap(error);
       // The connection closed first; the greeting is best effort.
     }
   }
@@ -129,7 +132,8 @@ async function write(send: SendStream, text: string): Promise<boolean> {
   try {
     await send.writeAll(encodeUtf8(text));
     return true;
-  } catch {
+  } catch (error) {
+    rethrowTrap(error);
     return false;
   }
 }
@@ -137,7 +141,8 @@ async function write(send: SendStream, text: string): Promise<boolean> {
 async function finish(send: SendStream): Promise<void> {
   try {
     await send.finish();
-  } catch {
+  } catch (error) {
+    rethrowTrap(error);
     // The peer stopped the stream or the connection closed; there is nothing left to end.
   }
 }

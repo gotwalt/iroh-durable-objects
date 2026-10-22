@@ -582,11 +582,16 @@ rewritten class:
   them; only the connections kept for reuse are dropped, since they belonged to the old
   node. The counters are not on the wire. Tests read them with the RPC `chatStats()`.
 - Storage failures are not turned into defaults. The Rust app logs `chat_sql_failed` and
-  goes on with an empty result or 0. The class answers a room request whose storage fails
-  with `storage error` and logs `room_request_failed` with the cause; a ctl request whose
-  storage fails ends its stream, and the rejection is logged as `task_failed` with its
-  stack. A member row and the event that goes with it (`join`, `nick`, `part`) are written
-  in one transaction, so a failure leaves neither.
+  goes on with an empty result or 0. The class answers a room request whose write was
+  rolled back with `storage error` and logs `room_request_failed` with the cause; a ctl
+  request whose storage fails ends its stream, and the rejection is logged as
+  `task_failed` with its stack. A member row and the event that goes with it (`join`,
+  `nick`, `part`) are written in one transaction, so a failure leaves neither. Once an
+  event is stored the reply is `ok`: a failure to queue it for delivery is logged as
+  `room_queue_failed`, since a member told `storage error` would send it again.
+- A wasm trap (`WebAssembly.RuntimeError`) is never caught as a closed connection or
+  stream: the handlers rethrow it, and in a task no event awaits it is logged as
+  `task_failed`.
 - JSON lines come from `JSON.stringify`, which escapes control characters as `\n`, `\t` and
   so on where the Rust app writes `\u000a`. PROTOCOL.md allows both.
 - When the notify stream fails, the dial-back closes the connection at once instead of

@@ -14,7 +14,7 @@
 // so no other request can interleave: the object runs one event at a time and yields only at
 // an `await`.
 import { type BiStream, type Connection, type Endpoint, EndpointId } from "iroh-do";
-import { rethrowTrap } from "./errors";
+import { rethrowTrap, unlessTrap } from "./errors";
 import { roomEvent } from "./events";
 import { background, errorText, type Logger } from "./log";
 import {
@@ -38,7 +38,7 @@ import {
   requestKind,
 } from "./protocol";
 import { RateLimiter } from "./rate-limit";
-import type { ChatStorage, Member, NewRecord, RoomRecord } from "./storage";
+import { type ChatStorage, type Member, type NewRecord, type RoomRecord, StorageError } from "./storage";
 
 /** Counters since the object was constructed, for tests. */
 export interface RoomStats {
@@ -102,7 +102,7 @@ export class Room {
     try {
       for (;;) {
         // acceptBi rejects once the connection is closed, by either side or when idle.
-        const stream = await conn.acceptBi().catch(() => null);
+        const stream = await conn.acceptBi().catch(unlessTrap(null));
         if (stream === null) return;
         background(this.#serveRequest(peer, stream), this.#log, "room request");
       }
@@ -120,12 +120,13 @@ export class Room {
 
   async #serveRequest(peer: string, stream: BiStream): Promise<void> {
     // Rejects for a request longer than the limit and for a stream the peer reset.
-    const bytes = await stream.recv.readToEnd(MAX_REQUEST_STREAM).catch(() => null);
+    const bytes = await stream.recv.readToEnd(MAX_REQUEST_STREAM).catch(unlessTrap(null));
     const replies = bytes === null ? [errorLine(ROOM_ERRORS.unreadable)] : this.#handleBytes(peer, bytes);
     try {
       await stream.send.writeAll(encodeUtf8(encodeLines(replies)));
       await stream.send.finish();
-    } catch {
+    } catch (error) {
+      rethrowTrap(error);
       // The member closed the connection or reset the stream: the reply cannot reach it.
     }
   }
@@ -154,8 +155,9 @@ export class Room {
     try {
       return this.#handle(peer, request);
     } catch (error) {
-      // In practice a storage failure, which the transactions roll back. The member gets the
-      // protocol's `storage error`, the log the cause.
+      // Only a write that was rolled back: the request stored nothing, so the member may send
+      // it again. Anything else is not answered as if nothing happened.
+      if (!(error instanceof StorageError)) throw error;
       this.#log.error("room_request_failed", { peer, kind: requestKind(request), error: errorText(error) });
       return [errorLine(ROOM_ERRORS.storage)];
     }
@@ -252,12 +254,26 @@ export class Room {
 
   /**
    * Stores an event, with the member's new state if `update` is given, queues it for the
-   * other joined, present members, and returns the `ok` reply.
+   * other joined, present members, and returns the `ok` reply. Throws StorageError if nothing
+   * was stored. Once the event is stored the reply is `ok`, even if queueing it fails: a member
+   * told otherwise would send it again and store it twice.
    */
   #publish(update: Member | null, record: NewRecord<RoomKind>): RoomLine {
     const now = Date.now();
     const stored =
       update === null ? this.#storage.append(record, now) : this.#storage.putMemberAndAppend(update, record, now);
+    try {
+      this.#queue(stored);
+    } catch (error) {
+      rethrowTrap(error);
+      // The members that miss the event see the gap through `prev`.
+      this.#log.error("room_queue_failed", { peer: stored.peer, seq: stored.seq, error: errorText(error) });
+    }
+    return { t: "ok", seq: stored.seq, prev: stored.prev };
+  }
+
+  /** Queues a stored event for the joined, present members other than the one it concerns. */
+  #queue(stored: RoomRecord): void {
     const line = `${JSON.stringify(roomEvent(stored))}\n`;
     const present = this.#presentPeers();
     let recipients = 0;
@@ -267,7 +283,6 @@ export class Room {
       this.#enqueue(m.peer, line);
     }
     this.#log.info("room_event", { peer: stored.peer, kind: stored.kind, seq: stored.seq, recipients });
-    return { t: "ok", seq: stored.seq, prev: stored.prev };
   }
 
   #who(): RoomLine {
@@ -349,6 +364,7 @@ export class Room {
     try {
       conn = await this.#endpoint().connect(EndpointId.fromZ32(recipient), ROOM_ALPN);
     } catch (error) {
+      rethrowTrap(error);
       // The relay socket closed, or the member did not answer the handshake.
       this.#log.warn("room_dial_failed", { peer: recipient, error: errorText(error) });
       return { ok: false, via: "dial" };
@@ -388,7 +404,8 @@ async function writeUni(conn: Connection, payload: string): Promise<boolean> {
     await stream.writeAll(encodeUtf8(payload));
     await stream.finish();
     return true;
-  } catch {
+  } catch (error) {
+    rethrowTrap(error);
     // The connection closed or the member stopped the stream; the caller counts the failure.
     return false;
   }

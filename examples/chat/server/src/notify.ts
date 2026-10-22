@@ -1,6 +1,7 @@
 // Dial-backs over `iroh-do/notify/1` (design note 007, PROTOCOL.md): when a `/callback` delay
 // ends, the object dials the peer over the peer's relay socket and writes one line.
 import { type Connection, type Endpoint, EndpointId } from "iroh-do";
+import { rethrowTrap } from "./errors";
 import { errorText, type Logger } from "./log";
 import { encodeUtf8, NOTIFY_ALPN, notifyLine } from "./protocol";
 import type { ChatStorage } from "./storage";
@@ -51,6 +52,7 @@ export class DialBack {
     try {
       conn = await this.#options.endpoint().connect(EndpointId.fromZ32(peer), NOTIFY_ALPN);
     } catch (error) {
+      rethrowTrap(error);
       // No relay socket for the peer, or the peer did not answer the handshake.
       failed("connect", error);
       return;
@@ -61,6 +63,7 @@ export class DialBack {
       await stream.writeAll(encodeUtf8(line));
       await stream.finish();
     } catch (error) {
+      rethrowTrap(error);
       failed("stream", error);
       conn.close(CLOSE_OK, encodeUtf8("done"));
       return;

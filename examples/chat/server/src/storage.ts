@@ -15,7 +15,17 @@
 // none is pending, and when it fires, `prune` returns the due time for the newest record left.
 //
 // The schema has no versions: changing it means resetting the deployment's state.
+import { errorText } from "./log";
 import { LIMITS, type LogKind, type RoomKind, truncateUtf8 } from "./protocol";
+
+/**
+ * A write that failed and was rolled back, so nothing of it was stored. Only writes throw it:
+ * the room answers `storage error` only when the request stored nothing, so that a member that
+ * sends the request again does not store it twice.
+ */
+export class StorageError extends Error {
+  override readonly name = "StorageError";
+}
 
 /** One record of the log. */
 export interface LogRecord {
@@ -191,7 +201,7 @@ export class ChatStorage {
    * log is empty; the caller arms it.
    */
   prune(nowMs: number): number | null {
-    return this.#storage.transactionSync(() => {
+    return this.#transaction(() => {
       this.#prune(nowMs);
       const newest = this.#sql.exec("SELECT ts_ms FROM log ORDER BY seq DESC LIMIT 1").toArray()[0];
       const due = newest === undefined ? null : integer(newest, "ts_ms") + PRUNE_DELAY_MS;
@@ -208,7 +218,7 @@ export class ChatStorage {
    */
   #appending<T>(tsMs: number, insert: () => T): T {
     let armAt: number | null = null;
-    const stored = this.#storage.transactionSync(() => {
+    const stored = this.#transaction(() => {
       const result = insert();
       const due = this.#sql.exec("SELECT value FROM log_meta WHERE name = 'prune_due_ms'").toArray()[0];
       // A due time in the past is an alarm that fired without moving itself on, or never ran.
@@ -220,6 +230,15 @@ export class ChatStorage {
     });
     if (armAt !== null) this.#schedulePrune(armAt);
     return stored;
+  }
+
+  /** Runs `body` in a transaction; if anything in it throws, throws StorageError. */
+  #transaction<T>(body: () => T): T {
+    try {
+      return this.#storage.transactionSync(body);
+    } catch (error) {
+      throw new StorageError(`transaction rolled back: ${errorText(error)}`, { cause: error });
+    }
   }
 
   #setMeta(name: string, value: number): void {
