@@ -97,20 +97,27 @@ up: build
     echo "certificate not serving yet; check: tofu -chdir=infra output certificate_status" >&2
     exit 1
 
-# Mint an endpoint of app APP (default chat) inside the Worker; write E (never the key) to .demo/endpoint.
+# Mint an endpoint of app APP (default chat) inside the Worker; write E (never the key) to
+# .demo/endpoint. LOCAL=1 mints in `just local-up`'s workerd instead, into .demo/endpoint.local.
 mint APP="chat" LABEL="":
     #!/usr/bin/env bash
     set -euo pipefail
-    export TF_VAR_state_passphrase="$(cat "{{demo_dir}}/state_passphrase")"
     export MINT_APP={{quote(APP)}}
     export MINT_LABEL={{quote(LABEL)}}
-    admin=$(tofu -chdir="{{infra}}" output -raw admin_url)
-    just _mint "$admin" "{{demo_dir}}/admin_token" "{{demo_dir}}/endpoint"
-    if [ {{quote(APP)}} = chat ]; then
-        echo "join:      just chat $(cat "{{demo_dir}}/endpoint")"
+    if [ -n "${LOCAL:-}" ]; then
+        port="${LOCAL_PORT:-$(cat "{{demo_dir}}/local-up.port" 2>/dev/null || echo 8787)}"
+        just _mint "http://admin.localhost:$port" "{{demo_dir}}/admin_token.local" "{{demo_dir}}/endpoint.local" "--resolve admin.localhost:$port:127.0.0.1"
+        out="{{demo_dir}}/endpoint.local"; pre="LOCAL=1 "
     else
-        echo "endpoint:  $(cat "{{demo_dir}}/endpoint")"
+        export TF_VAR_state_passphrase="$(cat "{{demo_dir}}/state_passphrase")"
+        admin=$(tofu -chdir="{{infra}}" output -raw admin_url)
+        just _mint "$admin" "{{demo_dir}}/admin_token" "{{demo_dir}}/endpoint"
+        out="{{demo_dir}}/endpoint"; pre=""
     fi
+    case {{quote(APP)}} in
+        chat) echo "join:      ${pre}just chat $(cat "$out")" ;;
+        echo) echo "try:       ${pre}just echo $(cat "$out")" ;;
+    esac
 
 # Destroy endpoint E: close its sockets, delete its key and history, drop it from the list.
 # Cannot be undone. Asks first unless CONFIRM=1. LOCAL=1 targets the local workerd.
@@ -170,6 +177,21 @@ chat E NICK=env_var_or_default("USER", "") *ARGS: build-demo
         net=(--local --local-port "$port")
     fi
     exec "{{run}}" "{{demo_bin}}" ${net[@]+"${net[@]}"} chat "$room" ${nick:+--nick "$nick"} "$@"
+
+# Echo TEXT off an endpoint minted with the echo app (`just mint echo`), with the stock
+# client in apps/echo-client. LOCAL=1 targets `just local-up`'s workerd, as for `just chat`.
+echo E TEXT="Hello, world!":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ {{quote(E)}} =~ ^[ybndrfg8ejkmcpqxot1uwisza345h769]{52}$ ]] || {
+        echo "error: '{{E}}' is not an EndpointId (52 characters of z-base-32); usage: just echo <E> [text]" >&2; exit 1; }
+    cargo build -q -p iroh-do-echo-client
+    net=()
+    if [ -n "${LOCAL:-}" ]; then
+        port="${LOCAL_PORT:-$(cat "{{demo_dir}}/local-up.port" 2>/dev/null || echo 8787)}"
+        net=(--local "$port")
+    fi
+    exec "{{run}}" "{{root}}/target/debug/iroh-do-echo-client" {{quote(E)}} {{quote(TEXT)}} ${net[@]+"${net[@]}"}
 
 # Run any iroh-do-chat subcommand against .demo/endpoint, e.g. `just cli ping`, `just cli chat`.
 cli CMD *ARGS: build-demo

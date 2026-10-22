@@ -2,8 +2,9 @@
 //
 //   node harness/workerd/evict-test.mjs
 //
-// Uses the bundle in build/worker/ and the peer at target/debug/iroh-do-chat
-// (override with IROH_DO_DEMO). Miniflare is pinned in package.json to the
+// Uses the bundle in build/worker/, the peer at target/debug/iroh-do-chat
+// (override with IROH_DO_DEMO) and, for case E, target/debug/iroh-do-echo-client
+// (override with IROH_DO_ECHO). Miniflare is pinned in package.json to the
 // version wrangler 4.130.0 bundles. Instead of waiting ~10 s for real
 // hibernation, the test forces it with
 // `Miniflare#unsafeEvictDurableObject(..., { webSockets: "hibernate" })`, and
@@ -31,6 +32,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..", "..");
 const bundle = join(repo, "build", "worker");
 const demoBin = process.env.IROH_DO_DEMO ?? join(repo, "target", "debug", "iroh-do-chat");
+const echoBin = process.env.IROH_DO_ECHO ?? join(repo, "target", "debug", "iroh-do-echo-client");
 const port = Number(process.env.PORT ?? 8817);
 const ADMIN_TOKEN = "evict-test-token";
 const SCRIPT = "iroh-do";
@@ -332,6 +334,40 @@ try {
   check("room: evictable after deliveries (or already unloaded)", roomEvictErr === null && Date.now() - t1 < 5_000,
     roomEvictErr ? roomEvictErr.message : `${Date.now() - t1} ms`);
   rmSync(stateDir, { recursive: true, force: true });
+
+  // E. An endpoint minted with the echo app (design note 011) runs iroh's echo example
+  //    handler, unchanged, for a stock peer; once the peer is gone the object holds nothing
+  //    that keeps it in memory, and the next round trip runs on a new object.
+  const em = await mf.dispatchFetch(`http://admin.localhost:${port}/mint`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${ADMIN_TOKEN}` },
+    body: JSON.stringify({ app: "echo" }),
+  });
+  const echoMinted = await em.json();
+  check("echo: mint", em.status === 200 && echoMinted.app === "echo", JSON.stringify(echoMinted));
+  const EE = echoMinted.id;
+  const echoOnce = (text) => new Promise((resolve) => {
+    const child = spawn(echoBin, [EE, text, "--local", String(port)], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => process.env.VERBOSE && process.stdout.write(`  | ${d}`));
+    child.on("exit", (code) => resolve({ code, out: out.trim() }));
+  });
+  const first = await echoOnce("echo before eviction");
+  check("echo: round trip", first.code === 0 && first.out === "echo before eviction", JSON.stringify(first));
+  await sleep(4_000); // T_linger (2 s) + teardown margin
+  const t2 = Date.now();
+  let echoEvictErr = null;
+  try {
+    await mf.unsafeEvictDurableObject(SCRIPT, CLASS, { name: EE, webSockets: "hibernate" });
+  } catch (e) {
+    // The peer has exited, so the object may already have left memory on its own.
+    if (!/not currently running/.test(e?.message)) echoEvictErr = e;
+  }
+  check("echo: evictable after the handler ran", echoEvictErr === null && Date.now() - t2 < 5_000,
+    echoEvictErr ? echoEvictErr.message : `${Date.now() - t2} ms`);
+  const second = await echoOnce("echo after eviction");
+  check("echo: round trip on a new object", second.code === 0 && second.out === "echo after eviction", JSON.stringify(second));
 } catch (e) {
   console.log(`FAIL exception: ${e?.stack ?? e}`);
   failures++;

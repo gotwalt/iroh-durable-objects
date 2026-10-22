@@ -1721,6 +1721,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "iroh-do-echo"
+version = "0.1.0"
+dependencies = [
+ "iroh",
+ "iroh-do",
+ "tokio",
+]
+
+[[package]]
+name = "iroh-do-echo-client"
+version = "0.1.0"
+dependencies = [
+ "iroh",
+ "n0-error",
+ "tokio",
+]
+
+[[package]]
 name = "iroh-do-harness"
 version = "0.1.0"
 dependencies = [
@@ -1730,6 +1748,7 @@ dependencies = [
  "iroh",
  "iroh-do-chat-app",
  "iroh-do-core",
+ "iroh-do-echo",
  "iroh-relay-ingress",
  "rand 0.10.3",
  "rusqlite",
@@ -1746,6 +1765,7 @@ version = "0.1.0"
 dependencies = [
  "iroh-do",
  "iroh-do-chat-app",
+ "iroh-do-echo",
  "wasm-bindgen",
  "worker",
 ]

@@ -76,7 +76,8 @@ pub mod schema;
 #[cfg(target_arch = "wasm32")]
 mod glue;
 
-pub use iroh_do_core::{App, AppEntry};
+/// The app API, re-exported so that an app needs only this crate. `iroh_do_core` has the rest.
+pub use iroh_do_core::{self as core, App, AppEntry, Ctx, Protocols};
 
 #[cfg(target_arch = "wasm32")]
 pub use glue::{Object, Registry, handle};

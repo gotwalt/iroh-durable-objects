@@ -21,6 +21,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 iroh-do-chat-app = { path = "../../apps/chat" }
+iroh-do-echo = { path = "../../apps/echo" }
 # Hashes the relay challenge in the raw relay-protocol client of tests/persistence.rs.
 blake3 = "1.8.2"
 # Test peers run stock iroh 1.4.0 with default features.

@@ -5,6 +5,8 @@ members = [
   "crates/iroh-ingress-transport",
   "crates/iroh-do-core",
   "apps/chat",
+  "apps/echo",
+  "apps/echo-client",
   "crates/iroh-do",
   "crates/iroh-do-worker",
   "crates/iroh-do-demo",
