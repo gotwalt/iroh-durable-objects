@@ -1,0 +1,17 @@
+# The test app (fixture.ts) for lifetime-test.mjs and panic-test.mjs. Built into test/dist by
+# `npm run build:test`, with the wasm module's test-panic feature. Never deployed.
+name = "iroh-do-test"
+main = "fixture.ts"
+compatibility_date = "2026-09-15"
+
+[vars]
+ZONE_SUFFIX = "localhost"
+PKARR_RELAY = ""
+
+[[durable_objects.bindings]]
+name = "ENDPOINTS"
+class_name = "Probe"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Probe"]

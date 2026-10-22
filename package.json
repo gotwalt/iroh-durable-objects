@@ -1,0 +1,14 @@
+{
+  "name": "iroh-do-workspace",
+  "private": true,
+  "description": "npm workspaces of the TypeScript host (design note 013): the iroh-do package and the apps built on it. One lockfile, here.",
+  "workspaces": [
+    "packages/iroh-do",
+    "examples/echo/server"
+  ],
+  "devDependencies": {
+    "miniflare": "5.20260908.0-alpha",
+    "typescript": "5.9.3",
+    "wrangler": "4.130.0"
+  }
+}

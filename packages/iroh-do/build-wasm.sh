@@ -1,9 +1,22 @@
 #!/usr/bin/env bash
-# Builds crates/iroh-do-wasm and runs wasm-bindgen (--target web) into pkg/.
-# No worker-build: wrangler bundles pkg/ with the TypeScript.
+# Builds crates/iroh-do-wasm for wasm32 and runs wasm-bindgen (--target web) into pkg/.
+#
+#   packages/iroh-do/build-wasm.sh [--test-panic]
+#
+# --test-panic enables the crate's `test-panic` feature, for test/panic-test.mjs only. The
+# features are recorded in pkg/FEATURES, and the bundle manifest (scripts/bundle.mjs)
+# refuses a build that has any.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
+
+features=""
+for arg in "$@"; do
+  case "$arg" in
+    --test-panic) features="test-panic" ;;
+    *) echo "usage: $0 [--test-panic]" >&2; exit 2 ;;
+  esac
+done
 
 # ring's C code must be built with clang and archived with llvm-ar for wasm32; Apple's ar
 # writes archives that link but fail at instantiation (deploy/BUILD.md).
@@ -21,9 +34,15 @@ if [[ "$have" != *"$want"* ]]; then
 fi
 
 cd "$repo"
-cargo build -p iroh-do-wasm --target wasm32-unknown-unknown --release
+cargo build -p iroh-do-wasm --target wasm32-unknown-unknown --release ${features:+--features "$features"}
 target="${CARGO_TARGET_DIR:-$repo/target}"
-wasm-bindgen --target web --out-dir "$here/pkg" "$target/wasm32-unknown-unknown/release/iroh_do_wasm.wasm"
+rm -rf "$here/pkg"
+# --experimental-reset-state-function generates `__wbg_reset_state`, which instantiates the
+# module again after a panic has trapped it, and marks objects and closures of the old
+# instance stale so that they cannot call into the new one (src/wasm.ts).
+wasm-bindgen --target web --experimental-reset-state-function \
+  --out-dir "$here/pkg" "$target/wasm32-unknown-unknown/release/iroh_do_wasm.wasm"
+printf '%s\n' "$features" > "$here/pkg/FEATURES"
 
 # Every import must come from the wasm-bindgen glue; a stray `env.*` import means ring's
 # archive came out empty (wrong `ar`).
@@ -38,3 +57,4 @@ gz=$(gzip -9 -c "$here/pkg/iroh_do_wasm_bg.wasm" | wc -c | tr -d ' ')
 js=$(wc -c < "$here/pkg/iroh_do_wasm.js" | tr -d ' ')
 echo "pkg/iroh_do_wasm_bg.wasm  $raw B raw, $gz B gzip -9"
 echo "pkg/iroh_do_wasm.js       $js B"
+echo "features: ${features:-none}"

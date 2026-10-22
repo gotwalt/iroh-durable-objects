@@ -1,0 +1,29 @@
+{
+  "name": "iroh-do",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "iroh endpoints as TypeScript Durable Objects, over the wasm library crates/iroh-do-wasm",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./test/harness.mjs"
+  },
+  "bin": {
+    "iroh-do-bundle": "./scripts/bundle.mjs"
+  },
+  "files": [
+    "src",
+    "pkg",
+    "scripts"
+  ],
+  "scripts": {
+    "build:wasm": "./build-wasm.sh",
+    "types": "wrangler types --config test/wrangler.toml test/worker-configuration.d.ts",
+    "check": "npm run types && tsc --noEmit",
+    "build:test": "./build-wasm.sh --test-panic && node scripts/bundle.mjs --no-wasm --allow-test-features --config test/wrangler.toml --outdir test/dist",
+    "test:lifetime": "node test/lifetime-test.mjs",
+    "test:panic": "node test/panic-test.mjs",
+    "test": "npm run build:test && npm run test:lifetime && npm run test:panic"
+  }
+}

@@ -12,7 +12,7 @@ members = [
   "examples/echo/app",
   "examples/echo/client",
   "examples/deployment",
-  "spikes/ts-host/peer",
+  "crates/iroh-do-test-peer",
 ]
 
 [workspace.package]

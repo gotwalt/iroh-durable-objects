@@ -1,0 +1,34 @@
+# The echo app on the TypeScript host. Used by `wrangler dev` and by
+# `wrangler deploy --dry-run` (npm run build); production is deployed by OpenTofu from
+# dist/manifest.json, never by wrangler. The vars below are for local runs; the deployment
+# binds its own.
+name = "iroh-ts"
+main = "src/worker.ts"
+# The newest date wrangler 4.130.0's bundled workerd accepts, as in examples/deployment.
+compatibility_date = "2026-09-15"
+
+[vars]
+ZONE_SUFFIX = "localhost"
+# "" disables pkarr publishing, so that localhost relay URLs are never published. The
+# deployment sets it to https://dns.iroh.link/pkarr (or leaves it unbound, the default).
+PKARR_RELAY = ""
+LOG_LEVEL = "info,iroh=warn,noq=warn,netwatch=error,iroh_do=info"
+BUNDLE_SHA256 = "local"
+# ADMIN_TOKEN is a secret: `wrangler dev --var ADMIN_TOKEN:<token>` locally.
+
+# One object per endpoint, named by its z-base-32 EndpointId. The namespace is `iroh-ts_Echo`.
+[[durable_objects.bindings]]
+name = "ENDPOINTS"
+class_name = "Echo"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Echo"]
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+invocation_logs = true

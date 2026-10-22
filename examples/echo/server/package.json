@@ -1,0 +1,18 @@
+{
+  "name": "iroh-do-echo-server",
+  "private": true,
+  "type": "module",
+  "description": "The echo app as a TypeScript Durable Object on iroh-do",
+  "dependencies": {
+    "iroh-do": "0.1.0"
+  },
+  "scripts": {
+    "build": "iroh-do-bundle --config wrangler.toml --outdir dist",
+    "types": "wrangler types",
+    "check": "npm run types && tsc --noEmit",
+    "dev": "wrangler dev --local --ip 127.0.0.1 --port ${LOCAL_PORT:-8799} --inspector-port 9799",
+    "test:evict": "node test/evict-test.mjs",
+    "test:admin": "node test/admin-test.mjs",
+    "test": "npm run test:admin && npm run test:evict"
+  }
+}

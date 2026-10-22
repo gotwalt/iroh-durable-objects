@@ -1714,6 +1714,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "iroh",
+ "iroh-dns",
  "iroh-ingress-transport",
  "n0-future",
  "ring",
@@ -1761,7 +1762,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "iroh-do-ts-spike-peer"
+name = "iroh-do-test-peer"
 version = "0.1.0"
 dependencies = [
  "iroh",
