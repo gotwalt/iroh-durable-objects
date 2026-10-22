@@ -5,12 +5,14 @@
 //   ever written. A room event's `prev` is the `seq` of the room event before it.
 // - `log_meta`: `log_seq`, the largest `seq` of a pruned log that was left empty, and
 //   `room_seq`, the `seq` of the newest room event; together they keep `seq` and `prev`
-//   increasing across pruning.
+//   increasing across pruning. `prune_due_ms`, when the prune alarm is due.
 // - `members`: the room's members, joined or not.
 //
 // The log keeps the newest LIMITS.logRetentionRows records and none older than
 // LIMITS.logMaxAgeMs. Every write prunes; a log that stops growing is pruned once more by an
-// alarm when its newest record expires, which `onAppend` schedules.
+// alarm PRUNE_DELAY_MS after its newest record. That alarm is not moved on every append,
+// which would write the schedule and re-arm the alarm per message: an append arms it only if
+// none is pending, and when it fires, `prune` returns the due time for the newest record left.
 //
 // The schema has no versions: changing it means resetting the deployment's state.
 import { LIMITS, type LogKind, type RoomKind, truncateUtf8 } from "./protocol";
@@ -147,13 +149,16 @@ function member(row: Row): Member {
 export class ChatStorage {
   readonly #storage: DurableObjectStorage;
   readonly #sql: SqlStorage;
-  readonly #onAppend: () => void;
+  readonly #schedulePrune: (dueMs: number) => void;
 
-  /** `onAppend` runs after every committed append; the object schedules the prune there. */
-  constructor(storage: DurableObjectStorage, onAppend: () => void) {
+  /**
+   * `schedulePrune` arms the prune alarm for `dueMs`. It runs after the append that needs it
+   * has committed, and must not throw.
+   */
+  constructor(storage: DurableObjectStorage, schedulePrune: (dueMs: number) => void) {
     this.#storage = storage;
     this.#sql = storage.sql;
-    this.#onAppend = onAppend;
+    this.#schedulePrune = schedulePrune;
   }
 
   createSchema(): void {
@@ -162,14 +167,12 @@ export class ChatStorage {
 
   /** Appends a record at `tsMs`. */
   append<K extends LogKind>(record: NewRecord<K>, tsMs: number): StoredRecord<K> {
-    const stored = this.#storage.transactionSync(() => this.#insert(record, tsMs));
-    this.#onAppend();
-    return stored;
+    return this.#appending(tsMs, () => this.#insert(record, tsMs));
   }
 
   /** Writes `member` and appends `record`, both or neither. */
   putMemberAndAppend<K extends LogKind>(update: Member, record: NewRecord<K>, tsMs: number): StoredRecord<K> {
-    const stored = this.#storage.transactionSync(() => {
+    return this.#appending(tsMs, () => {
       this.#sql.exec(
         `INSERT INTO members(peer, nick, joined, first_ms, last_ms) VALUES (?1, ?2, ?3, ?4, ?4)
          ON CONFLICT(peer) DO UPDATE SET nick = excluded.nick, joined = excluded.joined, last_ms = excluded.last_ms`,
@@ -180,13 +183,52 @@ export class ChatStorage {
       );
       return this.#insert(record, tsMs);
     });
-    this.#onAppend();
+  }
+
+  /**
+   * Deletes the records beyond the retention limits at `nowMs`, for the prune alarm. Returns
+   * when the alarm is next due, PRUNE_DELAY_MS after the newest record left, or null if the
+   * log is empty; the caller arms it.
+   */
+  prune(nowMs: number): number | null {
+    return this.#storage.transactionSync(() => {
+      this.#prune(nowMs);
+      const newest = this.#sql.exec("SELECT ts_ms FROM log ORDER BY seq DESC LIMIT 1").toArray()[0];
+      const due = newest === undefined ? null : integer(newest, "ts_ms") + PRUNE_DELAY_MS;
+      if (due === null) this.#sql.exec("DELETE FROM log_meta WHERE name = 'prune_due_ms'");
+      else this.#setMeta("prune_due_ms", due);
+      return due;
+    });
+  }
+
+  /**
+   * Runs `insert` in a transaction. If no prune alarm is pending at `tsMs`, records one for
+   * PRUNE_DELAY_MS later and, once the transaction has committed, has it armed. A pending
+   * alarm is due no later than that, and moves itself on when it fires.
+   */
+  #appending<T>(tsMs: number, insert: () => T): T {
+    let armAt: number | null = null;
+    const stored = this.#storage.transactionSync(() => {
+      const result = insert();
+      const due = this.#sql.exec("SELECT value FROM log_meta WHERE name = 'prune_due_ms'").toArray()[0];
+      // A due time in the past is an alarm that fired without moving itself on, or never ran.
+      if (due === undefined || integer(due, "value") < tsMs) {
+        armAt = tsMs + PRUNE_DELAY_MS;
+        this.#setMeta("prune_due_ms", armAt);
+      }
+      return result;
+    });
+    if (armAt !== null) this.#schedulePrune(armAt);
     return stored;
   }
 
-  /** Deletes the records beyond the retention limits at `nowMs`. */
-  prune(nowMs: number): void {
-    this.#storage.transactionSync(() => this.#prune(nowMs));
+  #setMeta(name: string, value: number): void {
+    this.#sql.exec(
+      `INSERT INTO log_meta(name, value) VALUES (?, ?)
+       ON CONFLICT(name) DO UPDATE SET value = excluded.value`,
+      name,
+      value,
+    );
   }
 
   // `seq` is explicit because SQLite would number the first row of an emptied table 1 again.
@@ -209,13 +251,7 @@ export class ChatStorage {
         .one(),
       "seq",
     );
-    if (room) {
-      this.#sql.exec(
-        `INSERT INTO log_meta(name, value) VALUES ('room_seq', ?)
-         ON CONFLICT(name) DO UPDATE SET value = excluded.value`,
-        seq,
-      );
-    }
+    if (room) this.#setMeta("room_seq", seq);
     this.#prune(tsMs);
     return { seq, prev, tsMs, peer: record.peer, kind: record.kind, nick: record.nick, text: body };
   }

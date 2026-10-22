@@ -13,6 +13,7 @@ export type EventName =
   | "room_dial_failed"
   | "dial_back"
   | "bad_schedule_key"
+  | "prune_schedule_failed"
   | "task_failed";
 
 export type Fields = Readonly<Record<string, string | number | boolean>>;

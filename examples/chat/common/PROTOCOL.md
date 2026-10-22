@@ -394,8 +394,10 @@ Where note 008 is silent or says otherwise, this document holds.
    not mention it.
 9. **`/history 0`** replies with no lines; values above 200 are silently reduced.
 10. **Retention alarm.** Note 008 and `docs/design.md` speak of a daily alarm. The
-    app schedules one alarm per insert for 14 days plus 60 seconds later under the
-    key `prune`, so there is a single pending alarm, not a daily one.
+    apps keep a single pending alarm under the key `prune`, not a daily one, due
+    14 days plus 60 seconds after the newest insert. The Rust app moves it on every
+    insert; the TypeScript server arms it on an insert only when none is pending, and
+    when it fires moves it to 14 days plus 60 seconds after the newest record left.
 11. **The chat client** (`examples/chat/client/src/room.rs`) differs from the
     object in two ways, both on purpose and both recorded in
     `fixtures_check.rs`: its `Event` has no `hist` field, so it drops it; and its

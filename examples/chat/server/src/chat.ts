@@ -4,11 +4,12 @@
 import { IrohDurableObject, type Protocols, type Timings } from "iroh-do";
 import { Ctl } from "./ctl";
 import { serveEcho } from "./echo";
-import { background, logger } from "./log";
+import { rethrowTrap } from "./errors";
+import { background, errorText, logger } from "./log";
 import { DialBack, type DialBackStats } from "./notify";
 import { CTL_ALPN, ECHO_ALPN, ROOM_ALPN } from "./protocol";
 import { Room, type RoomStats } from "./room";
-import { ChatStorage, PRUNE_DELAY_MS, PRUNE_KEY } from "./storage";
+import { ChatStorage, PRUNE_KEY } from "./storage";
 
 /** The bindings the class reads. */
 export interface ChatEnv {
@@ -38,7 +39,7 @@ export class Chat extends IrohDurableObject<ChatEnv> {
 
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env);
-    this.#storage = new ChatStorage(ctx.storage, () => this.schedule(PRUNE_KEY, PRUNE_DELAY_MS));
+    this.#storage = new ChatStorage(ctx.storage, (dueMs) => this.#schedulePrune(dueMs));
     // `sql.exec` is synchronous, so the tables exist before the object handles its first
     // event; `blockConcurrencyWhile` is needed only for asynchronous setup. The router reaches
     // this class only for endpoints the registry lists as `chat`, so only objects that are
@@ -74,7 +75,8 @@ export class Chat extends IrohDurableObject<ChatEnv> {
 
   protected override onAlarm(key: string): void {
     if (key === PRUNE_KEY) {
-      this.#storage.prune(Date.now());
+      const due = this.#storage.prune(Date.now());
+      if (due !== null) this.#schedulePrune(due);
     } else if (key.startsWith(DIAL_BACK_KEY)) {
       // Not awaited, so that the alarm's other due work does not wait for the dial and the
       // linger. A failed dial-back is recorded, not retried.
@@ -108,6 +110,20 @@ export class Chat extends IrohDurableObject<ChatEnv> {
   #endpointId(): string {
     this.#id ??= this.endpoint.id().toZ32();
     return this.#id;
+  }
+
+  /**
+   * Arms the prune alarm for `dueMs`. Runs after an append has committed, so a failure is
+   * logged, not thrown: the append stands, and the next append after `dueMs` arms the alarm
+   * again (ChatStorage).
+   */
+  #schedulePrune(dueMs: number): void {
+    try {
+      this.schedule(PRUNE_KEY, Math.max(0, dueMs - Date.now()));
+    } catch (error) {
+      rethrowTrap(error);
+      this.#log.error("prune_schedule_failed", { error: errorText(error) });
+    }
   }
 
   #wakes(): number {
