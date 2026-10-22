@@ -1,0 +1,16 @@
+{
+  "name": "iroh-do-chat-server",
+  "private": true,
+  "type": "module",
+  "description": "The chat app (examples/chat/app) as a TypeScript Durable Object class on iroh-do",
+  "exports": {
+    ".": "./src/chat.ts"
+  },
+  "dependencies": {
+    "iroh-do": "0.1.0"
+  },
+  "scripts": {
+    "types": "wrangler types",
+    "check": "npm run types && tsc --noEmit"
+  }
+}

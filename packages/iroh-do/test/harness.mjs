@@ -30,10 +30,12 @@ export function fail(e) {
 
 /**
  * Starts Miniflare on the bundle in `dist` (manifest.json from scripts/bundle.mjs), with one
- * Durable Object class bound as ENDPOINTS. `persist` keeps storage across instances, to
- * simulate an eviction by restarting. Collects the Worker's log lines in `logs`.
+ * Durable Object class bound as ENDPOINTS, or with `classes`, a map of binding name to class
+ * name. `persist` keeps storage across instances, to simulate an eviction by restarting.
+ * Collects the Worker's log lines in `logs`.
  */
-export function startWorker({ dist, script, className, port, vars = {}, persist }) {
+export function startWorker({ dist, script, className, classes, port, vars = {}, persist }) {
+  const bound = classes ?? { ENDPOINTS: className };
   const manifest = JSON.parse(readFileSync(join(dist, "manifest.json"), "utf8"));
   const modules = Object.fromEntries(manifest.modules.map((m) => [m.name, m.content_type === "application/wasm"
     ? { type: "wasm", contents: new Uint8Array(readFileSync(join(dist, m.path))) }
@@ -58,7 +60,7 @@ export function startWorker({ dist, script, className, port, vars = {}, persist 
         compatibilityDate: "2026-09-15",
         manifest: { mainModule: manifest.main_module, modules },
         env: {
-          ENDPOINTS: { type: "durable-object", worker: script, exportName: className },
+          ...Object.fromEntries(Object.entries(bound).map(([b, c]) => [b, { type: "durable-object", worker: script, exportName: c }])),
           ZONE_SUFFIX: text("localhost"),
           BUNDLE_SHA256: text(manifest.bundle_sha256),
           ADMIN_TOKEN: text("test-token"),
@@ -66,7 +68,7 @@ export function startWorker({ dist, script, className, port, vars = {}, persist 
           LOG_LEVEL: text(process.env.LOG_LEVEL ?? "info,iroh=warn,noq=warn,netwatch=error,iroh_do=info"),
           ...Object.fromEntries(Object.entries(vars).map(([k, v]) => [k, text(String(v))])),
         },
-        exports: { [className]: { type: "durable-object", storage: "sqlite" } },
+        exports: Object.fromEntries(Object.values(bound).map((c) => [c, { type: "durable-object", storage: "sqlite" }])),
       },
     }],
   });
@@ -78,7 +80,12 @@ export function startWorker({ dist, script, className, port, vars = {}, persist 
     persistDir,
     /** Log entries whose `event` field is `event`. */
     events: (event) => logs.filter((l) => new RegExp(`event["']?: ?["']${event}["']`).test(l)),
-    mint: async () => (await mf.dispatchFetch(`${base}/mint`, { method: "POST", headers: auth })).json(),
+    /** POST /mint, with `body` (an object, sent as JSON) if given. */
+    mint: async (body) => (await mf.dispatchFetch(`${base}/mint`, {
+      method: "POST",
+      headers: auth,
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    })).json(),
     status: async (E) => {
       const r = await mf.dispatchFetch(`${base}/status/${E}`);
       return r.status === 200 ? r.json() : null;

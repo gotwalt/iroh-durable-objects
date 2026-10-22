@@ -74,6 +74,10 @@ const SCHEMA = [
 
 const SWEEP = "sweep";
 const REPUBLISH = "republish";
+/** Prefix of the app's schedule keys, the one `iroh_do_core::Ctx::schedule` uses. */
+const APP_KEY = "app:";
+/** Delay before app work whose `onAlarm` threw runs again (design.md, "Failure handling"). */
+const APP_RETRY_MS = 30 * 1000;
 /** Close code and reason for the sockets of a destroyed endpoint. */
 const CLOSE_DESTROYED = 1000;
 
@@ -117,12 +121,64 @@ export abstract class IrohDurableObject<Env = unknown> extends DurableObject<Env
   /** The binding of this class's namespace in `env`, to check that a key matches the name. */
   static namespace = "ENDPOINTS";
 
-  /** The app's protocol handlers. Called once per node build. */
+  /**
+   * The app's name, reported as `app` in the status. Unset, the status reports the wasm
+   * library's placeholder, `ts`.
+   */
+  static app: string | undefined = undefined;
+
+  /**
+   * The app's protocol handlers. Called once per node build, which happens only in a minted
+   * object, so it is also where an app creates its tables.
+   */
   abstract protocols(): Protocols;
 
   /** Node timings; override to change them. */
   protected timings(): Timings {
     return {};
+  }
+
+  /**
+   * Runs work the app scheduled with `schedule(key, ...)`. Called from the alarm, with the
+   * node built but not necessarily bound. If it throws, the work runs again after 30 s.
+   */
+  protected onAlarm(_key: string, _payload: string): void | Promise<void> {}
+
+  /** Fields the app adds to the endpoint's status. */
+  protected appStatus(): Record<string, unknown> {
+    return {};
+  }
+
+  /**
+   * Schedules `onAlarm(key, payload)` after `delayMs`, replacing pending work with the same
+   * key. The row is stored, so the work runs even if the object hibernates in between.
+   */
+  protected schedule(key: string, delayMs: number, payload = ""): void {
+    this.#schedule(APP_KEY + key, Date.now() + delayMs, payload);
+  }
+
+  /** Cancels pending work scheduled with `key`. */
+  protected cancel(key: string): void {
+    this.#sql("DELETE FROM iroh_schedule WHERE key = ?", APP_KEY + key);
+    this.#rearm();
+  }
+
+  /**
+   * The endpoint's status as `iroh_do_core::Ctx::status` gives it to a Rust app: the node's
+   * fields (`id`, `state`, `wakes`, `endpoint_builds`, `connections`, `bundle`,
+   * `since_wake_ms`), `app`, and the app's fields, keys sorted as serde_json writes them.
+   * Throws before mint.
+   */
+  protected endpointStatus(): Record<string, unknown> {
+    if (!this.#loaded) this.#enter();
+    if (!this.#node) throw new Error("endpoint not minted");
+    return this.#nodeStatus(this.#node);
+  }
+
+  #nodeStatus(node: WasmNode): Record<string, unknown> {
+    const app = (this.constructor as typeof IrohDurableObject).app;
+    const all: Record<string, unknown> = { ...JSON.parse(node.status()), ...(app ? { app } : {}), ...this.appStatus() };
+    return Object.fromEntries(Object.keys(all).sort().map((k) => [k, all[k]]));
   }
 
   #node: WasmNode | null = null;
@@ -439,6 +495,7 @@ export abstract class IrohDurableObject<Env = unknown> extends DurableObject<Env
         this.#sql("DELETE FROM iroh_schedule WHERE key = ?", key);
         if (key === SWEEP) this.#apply(node.sweep(Date.now()));
         else if (key === REPUBLISH) await this.#publish();
+        else if (key.startsWith(APP_KEY)) await this.#appAlarm(key, d.payload as string);
         else node.alarm(key, d.payload as string);
       }
       // Kinds, not keys: an app key may carry a peer's EndpointId.
@@ -446,6 +503,20 @@ export abstract class IrohDurableObject<Env = unknown> extends DurableObject<Env
       log("info", "alarm", { endpoint: this.#identity()?.id, due: kinds, ran: due.length, ms: Date.now() - t0 });
       this.#rearm();
     });
+  }
+
+  async #appAlarm(key: string, payload: string): Promise<void> {
+    try {
+      await this.onAlarm(key.slice(APP_KEY.length), payload);
+    } catch (e) {
+      if (noteTrap(e)) throw e;
+      // The kind only: an app key may carry a peer's EndpointId.
+      log("warn", "alarm_failed", { endpoint: this.#identity()?.id, due: "app", error: String(e), retry_in_s: APP_RETRY_MS / 1000 });
+      // Unless the handler scheduled the key again itself.
+      if (this.#sql("SELECT 1 FROM iroh_schedule WHERE key = ?", key).toArray().length === 0) {
+        this.#schedule(key, Date.now() + APP_RETRY_MS, payload);
+      }
+    }
   }
 
   /**
@@ -565,7 +636,7 @@ export abstract class IrohDurableObject<Env = unknown> extends DurableObject<Env
     return this.#run(() => null, (node) => {
       if (!node) return null;
       return {
-        ...JSON.parse(node.status()),
+        ...this.#nodeStatus(node),
         tasks: node.tasks(),
         open_streams: node.openStreams(),
         sockets: [...this.#sockets.keys()],

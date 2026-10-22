@@ -176,7 +176,36 @@ connection is dropped rather than left stalled.
 - **An app is chosen per deployment, not per endpoint** (011, decision 2): each
   app is a DO class, and its Worker binds that class. One deployment can still
   export several classes. The router then needs `E → class`, which mint
-  records in the registry.
+  records in the registry. *Implemented in step 2*:
+  - `IrohRegistry` (`packages/iroh-do/src/registry.ts`) is the registry object
+    of note 009 with the same table, `endpoints(id, app, label, minted_at)`. The
+    deployment exports it as class `Registry`.
+  - `irohRouter({ apps, registry })` maps app names to class bindings.
+    `POST /mint` takes the body the Rust router takes, `{"app", "label"}`, with
+    the first app as the default. The router writes `E → app` to the registry
+    before the object stores its identity, and removes it again if the mint
+    fails. The Rust router registers after the mint and retries on the next
+    wake; here the router cannot reach `E` without the entry, so it must exist
+    before `E` is handed out.
+  - Relay, status and destroy requests ask the registry for `E`'s app over
+    Workers RPC. Each isolate caches the answer in a map, bounded at 10,000
+    entries and cleared when full. The cache needs no invalidation because
+    `E → app` never changes after mint. A destroyed endpoint's stale entry in
+    another isolate routes to an object without an identity, which answers 404.
+  - Alternatives not taken: encoding the app in the hostname would change the
+    relay URL, which is a function of the key alone (`design.md`, Addressing).
+    Trying each class in turn would wake one object per class per request.
+  - Cost: a request for a valid id that is not cached wakes the registry, also
+    for ids that were never minted. Step 1 woke the endpoint object instead.
+    Only registered ids are cached, so repeated requests for unminted ids wake
+    the registry each time.
+  - Endpoints minted in step 1's `iroh-ts` are not in the registry and are not
+    reachable after step 2. There is no backfill: an object that is not
+    reachable cannot register itself, and this deployment keeps no
+    compatibility (above).
+  - Measured in Miniflare (`examples/ts-deployment/test/router-test.mjs`): in
+    a new isolate, the first status request for `E` made one registry lookup,
+    and a second status request and a relay session made none.
 - **Build:** `cargo build` for wasm32 plus `wasm-bindgen --target web`, then
   `wrangler deploy --dry-run --outdir`. wrangler names the wasm file by its
   content hash. The build writes a manifest naming the main module and the
@@ -191,15 +220,33 @@ connection is dropped rather than left stalled.
   - `tests/workerd/` is rewritten for the new bundle.
 - **Examples:**
   - `examples/echo` becomes a TypeScript class.
-  - `examples/chat/server` becomes a TypeScript class.
+  - `examples/chat/server` becomes a TypeScript class. *Done in step 2*: class
+    `Chat`, a port of `examples/chat/app` with the same replies, limits,
+    error strings, log records and SQL. It schedules dial-backs and the log
+    prune through `schedule` and `onAlarm`, and adds `records`, `members` and
+    `present` to the status through `appStatus`, the base class's equivalents
+    of `Ctx::schedule`, `App::on_alarm` and `App::status`. The Rust app stays
+    deployed on the Rust host until step 3.
+  - *Step 2*: one deployment, `examples/ts-deployment` (script `iroh-ts`),
+    exports `Echo`, `Chat` and `Registry`. `examples/echo/server` and
+    `examples/chat/server` hold the classes; each also has a single-class
+    Worker for its own checks.
   - `examples/chat/common` holds the room protocol as a written spec plus golden
     request and reply fixtures. The TypeScript server's tests and the Rust
     client's tests both check the fixtures.
   - The clients do not change (P3).
 - **Ported in step 1:** pkarr publishing at mint (Rust builds, signs and checks the
   record in `iroh_do_core::pkarr`; TypeScript does the `fetch`, the retries and the
-  republish alarm) and destroy, as the RPC `destroy()`. **Not yet ported:** the registry
-  and the endpoint list.
+  republish alarm) and destroy, as the RPC `destroy()`. Step 2 ported the registry and
+  the endpoint list (above).
+- **Migrations (step 2).** Adding `Chat` and `Registry` to the live `iroh-ts`
+  script needs a second Durable Object migration. `deploy/tofu` takes a list of
+  migrations per module and sends only the steps after the live script's tag:
+  `v2` with `old_tag = "v1"` for `iroh-ts`, nothing for `iroh-do`. Reading the
+  provider and OpenTofu showed that the `ignore_changes = [migrations]` of
+  note 012 would make any update of `iroh-ts` fail the after-apply
+  consistency check, so it is removed (`deploy/tofu/README.md`, "Verified and
+  unverified").
 - **`unsafe`:** removed in step 1. `iroh-do-core` has `LocalProtocolHandler`, whose
   `accept` future must be `Send` only natively; on wasm32 the node spawns handler futures
   with `spawn_local` and needs no bound. `iroh-do-wasm` registers its handlers with

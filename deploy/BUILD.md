@@ -43,13 +43,15 @@ alias and `package.json`, which are not part of the upload.
 ## TypeScript host bundle
 
 The TypeScript host (design note 013) is built by wrangler instead of
-worker-build. The echo server's build (`npm --prefix examples/echo/server run
+worker-build. The deployment's build (`npm --prefix examples/ts-deployment run
 build`, called by `just build-ts`) runs `wrangler deploy --dry-run --outdir
 dist` and writes `manifest.json` next to the output; `just build-ts` copies
-the directory to `build/echo-ts/`:
+the directory to `build/iroh-ts/`. The script exports the classes `Echo`,
+`Chat` and `Registry`, bound as `ENDPOINTS`, `CHAT` and `REGISTRY`, with the
+migrations `v1` (`Echo`) and `v2` (`Chat`, `Registry`):
 
 ```
-build/echo-ts/
+build/iroh-ts/
   worker.js                              # ESM main module; imports "./<hash>-iroh_do_wasm_bg.wasm"
   <hash>-iroh_do_wasm_bg.wasm            # named by wrangler after the wasm's content hash
   manifest.json

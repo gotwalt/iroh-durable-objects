@@ -8,9 +8,12 @@ Two rounds of verification of design note 013, both on 2026-10-22, with wrangler
   `iroh-do-echo-client` echoed off `class Echo extends IrohDurableObject` under
   `wrangler dev`, and the eviction test passed its 18 checks in Miniflare. The spike lived
   in `spikes/ts-host/`; its files moved as listed under "Step 1: layout".
-- **Step 1** (last sections): the package, the echo app and the tests as they are now,
-  with connection lifetime, panic recovery, pkarr at mint, destroy over RPC and the
+- **Step 1** (sections "Step 1: …"): the package, the echo app and the tests, with
+  connection lifetime, panic recovery, pkarr at mint, destroy over RPC and the
   eviction marker.
+- **Step 2** (sections "Step 2: …", 2026-10-22, same versions): the chat app as class
+  `Chat`, the registry and routing by app, and the deployment `iroh-ts` with both apps.
+  Not yet deployed to production.
 
 Paths in the spike sections are the spike's.
 
@@ -377,6 +380,198 @@ sessions.
 `evicted_active` was not logged. It can appear only when production evicts an
 object with a connection open, which needs observation over days.
 
+## Step 2: what was built
+
+- `examples/chat/server/src/{app,store,chat}.ts`: the chat app of `examples/chat/app` as
+  class `Chat`. `store.ts` has the Rust app's SQL text unchanged. `app.ts` ports
+  `lib.rs`, `room.rs` and `ctl.rs`, including:
+  - the JSON escaping of `json_escape_into`, which differs from `JSON.stringify` (`\n` is
+    written `\u000a`);
+  - Rust's `str::trim` whitespace set, which differs from JavaScript's `trim` (U+0085 is
+    whitespace, U+FEFF is not);
+  - Rust's unsigned integer parsing (`+5` and `007` are accepted), with `usize` bounded at
+    2^32 − 1 as in the deployed wasm32 build;
+  - UTF-8 decoding that keeps a leading BOM, as `String::from_utf8` does.
+- `packages/iroh-do`:
+  - `IrohDurableObject` gained `schedule`, `cancel`, `onAlarm`, `appStatus`,
+    `endpointStatus` and `static app`.
+  - `IrohRegistry` and the endpoint list (`registry.ts`) are new.
+  - `irohRouter({ apps, registry })` is the multi-class form; `irohRouter({ binding })` is
+    unchanged.
+- `examples/ts-deployment`: the script `iroh-ts`, exporting `Echo` (binding `ENDPOINTS`),
+  `Chat` (`CHAT`) and `Registry` (`REGISTRY`).
+
+Sizes of `npm run build` in `examples/ts-deployment`, from `just bundle-info-ts`:
+
+| File | Raw | gzip -9 |
+|---|---|---|
+| `worker.js` (not minified) | 164,995 B | 34,360 B |
+| `<hash>-iroh_do_wasm_bg.wasm` | 4,473,484 B | 1,482,299 B |
+
+The wasm is step 1's module unchanged. `worker.js` grew by 47,586 B over step 1's
+117,409 B; the chat app and the registry are TypeScript.
+
+## Step 2: the stock client's lifecycle under `wrangler dev`
+
+`iroh-do-chat lifecycle --room` against a chat endpoint of the deployment, with
+`wrangler dev --local` on port 8799. The run includes every row of the plain `lifecycle`
+plus the room rows. Two members exchange lines after the object hibernated, both by
+dial-back:
+
+```
+ #  step                                                       result            t     measured  records  detail
+--  ---------------------------------------------------------  ------  -----------  -----------  -------  ------
+ 1  s1 connect ctl/1 (first contact: possibly cold)            PASS          0.0 s      38.6 ms           relay http://1pay…ecky.localhost:8799/; 0-RTT not attempted (no ticket)
+ 2  s1 echo (logged line)                                      PASS          0.1 s      15.0 ms           echo: lifecycle yt1pohwn 1792706462426 s1 (#1, total 1, yours 1)
+ 3  s1 unprompted uni stream from DO                           PASS          0.1 s                        hello from 1pay…ecky: you are yt1p…f8oy
+ 4  s1 /status                                                 PASS          0.1 s       3.0 ms        1  state=Active wakes=1 endpoint_builds=1 connections=1 since_wake=4459ms bundle=local records=1
+ 5  DO closes idle connection (T_idle)                         PASS         10.1 s   10012.0 ms           application close code 0 reason "idle"
+ 6  wait for Warm (T_linger) + hibernation                     info         25.1 s   15000.0 ms           Endpoint dropped, isolate idle
+ 7  s2 connect ctl/1 (cold wake)                               PASS         25.1 s      21.6 ms           relay http://1pay…ecky.localhost:8799/
+ 8  s2 0-RTT after Warm                                        info         25.1 s                        rejected: expected on stock iroh 1.4.0 (…)
+ 9  s2 echo (logged line)                                      PASS         25.1 s       9.6 ms           echo: lifecycle yt1pohwn 1792706462426 s2 (#2, total 2, yours 2)
+10  s2 /status                                                 info         25.1 s       3.0 ms        2  state=Active wakes=2 endpoint_builds=2 connections=1 since_wake=28ms bundle=local records=2
+11  s2 wakes increased (isolate was evicted/hibernated)        PASS         25.1 s                        wakes 1 -> 2
+12  s2 endpoint_builds increased (Active -> Warm -> Active)    PASS         25.1 s                        endpoint_builds 1 -> 2
+13  s2 records increased across hibernation (wakes increased)  PASS         25.1 s                     2  records 1 -> 2, wakes 1 -> 2
+14  s2 /log after hibernation contains the s1 line             PASS         25.1 s                        #1 ctl "lifecycle yt1pohwn 1792706462426 s1"
+15  s2 DO-side time since wake                                 info         25.1 s      28.0 ms           reported by the DO in /status
+16  s2 unprompted uni stream from DO                           PASS         25.1 s                        hello from 1pay…ecky: you are yt1p…f8oy
+17  s2 /callback 20                                            PASS         25.1 s       3.2 ms           ok: callback in 20s
+18  s2 closed by peer; idle until dial-back                    info         25.1 s
+19  notify/1 dial-back from DO received                        PASS         45.1 s      36.5 ms           callback from 1pay…ecky wakes=3 records=2 (measured from the scheduled time)
+20  notify/1 incoming handshake                                info         45.1 s      18.8 ms           object -> peer over the peer's own relay socket to the object
+21  notify/1 records >= s2 records                             PASS         45.1 s                     2  records 2 -> 2 (the callback row is written after delivery)
+22  DO hibernated before dial-back                             info         45.1 s                        yes: wakes 2 -> 3
+23  s3 connect ctl/1                                           PASS         46.2 s      12.5 ms           0-RTT rejected (fell back to 1-RTT)
+24  s3 /status                                                 info         46.2 s      11.5 ms        3  state=Active wakes=3 endpoint_builds=3 connections=1 since_wake=6053ms bundle=local records=3
+25  s3 records increased (callback logged)                     PASS         46.2 s                     3  records 2 -> 3
+26  s3 /log has the callback row                               PASS         46.2 s                        #3 "delivered"
+27  room member a joins, then exits (stays a member)           PASS         46.2 s      42.0 ms           6sk7…qx7y
+28  room member b joins and stays present                      PASS         47.3 s      60.6 ms           7oc6…pe3o (home relay: the room)
+29  room wait for hibernation, b quiet                         info         78.3 s   30000.0 ms           wakes before: 3
+30  room member a returns (same key)                           PASS         78.4 s      59.3 ms
+31  room object hibernated while b was present                 PASS         78.4 s                        wakes 3 -> 4
+32  room a says, b gets it delivered (dial-back)               PASS         78.5 s      61.6 ms
+33  room b says, a gets it delivered                           PASS         78.5 s      56.8 ms
+34  room members a and b leave (/quit)                         PASS         79.6 s
+
+result: PASS
+```
+
+(Ids shortened here.) The server log of that run had no error lines. It logged
+`room_delivery` three times, once `via: 'dial'` and twice `via: 'open'`, and `dial_back` once
+with `ok: true`. On the same endpoint the client's `ping -c 2` echoed (0-RTT accepted on the
+second connection, within one Active period). `log -n 4` and a `ctl` session over stdin
+answered as the Rust app does. That session sent a line, `/count`, `/log 2`, `/callback 99`
+and `/log x`, and the last two returned `error: usage /callback <secs>, secs <= 50` and
+`error: usage /log [n], n <= 50`. `GET /endpoints.json`, `GET /` and `GET /status/<E>`
+listed the endpoint with app `chat`, its label and the join hint `iroh-do-chat <E>`.
+
+## Step 2: router and registry in Miniflare
+
+`node test/router-test.mjs` in `examples/ts-deployment`. The chat endpoint is reached with
+`iroh-do-chat ping`, which uses `iroh-do/echo/1`, an ALPN that only `Chat` serves. The echo
+endpoint is reached with the test peer on `iroh-example/echo/0`, which only `Echo` serves.
+
+```
+PASS mint with no body: the first app, chat: {"id":"rgiq…utky","app":"chat","relay_url":"http://rgiq…utky.localhost:8830/","published":false}
+PASS mint {app: echo, label}: {"id":"memi…sdho","app":"echo",…}
+PASS unknown app: 400 naming the apps: 400 unknown app; this deployment has ["chat", "echo"]
+PASS label of 65 characters: 400
+PASS label with a control character: 400
+PASS body that is not JSON: 400
+PASS mint without the token: 401
+PASS endpoints.json: both, newest first, with app and label: …
+PASS list page: join hints per app, label escaped
+PASS POST /endpoints.json: 405
+PASS status of the chat endpoint comes from class Chat: {"app":"chat","records":0,"members":0,"present":0}
+PASS status of the echo endpoint comes from class Echo: app=echo
+PASS status of a valid id that was never minted: 404
+PASS relay upgrade for a valid id that was never minted: 404
+PASS iroh-do-chat ping reaches class Chat (iroh-do/echo/1): ping 1/1: echo 32 B ok | connect 37.0 ms | …
+PASS test peer ready on the echo endpoint
+PASS test peer echoes off class Echo (iroh-example/echo/0): echo: routed ms=9
+PASS first request for E in an isolate asks the registry, later ones use the cache: lookups after first status 1, after second status and a relay session 1
+PASS another endpoint: one more lookup: lookups 2
+PASS destroy the chat object directly over RPC: {"id":"rgiq…utky","destroyed":true}
+PASS stale cache entry: status and relay reach the object, which answers 404: status 404, relay 404, lookups 2
+PASS DELETE /endpoints/<echo>: 200 {id, destroyed}: …
+PASS destroyed endpoint left the list: …
+PASS status after destroy: 404
+PASS second destroy: 404
+PASS destroy of an entry whose object is gone: 404, entry removed: 404, 0 left
+ALL PASS
+```
+
+The cache checks restart Miniflare on the same storage, which gives a new isolate with an
+empty cache and a new registry object whose lookup count starts at 0.
+
+## Step 2: two present members across a forced hibernation
+
+`node test/room-test.mjs` in `examples/ts-deployment`, with three stock `iroh-do-chat`
+clients without a UI. `ana` and `bo` run `--listen-for`; `cy` runs `--say` twice.
+
+```
+PASS ana joined (her join is in the /join history): {"t":"join","seq":1,"prev":0,…,"nick":"ana","hist":true}
+PASS bo's join delivered live to ana: {"t":"join","seq":2,"prev":1,…,"nick":"bo"}
+PASS Warm with both members present, no tasks: state=Warm tasks=0 members=2 present=2 sockets=2
+PASS forced eviction in Warm succeeds promptly: 97 ms
+PASS woken object: wakes +1, same two sockets, both present: wakes 1 -> 2, sockets 2, present 2
+PASS new construction: no deliveries yet: {…"deliveries_ok":0,…"delivery_dials":0,…}
+PASS cy's --say printed the stored message: {"t":"msg","seq":4,"prev":3,…,"nick":"cy","text":"after the eviction: \"quoted\" é"}
+PASS ana and bo got the line delivered by dial-back: … | …
+PASS each delivery dialed the member (no connection was open): {…"deliveries_ok":2,"deliveries_failed":0,"delivery_dials":2,"delivery_reuses":0,…}
+PASS the next deliveries reuse the dialed connections: reuses 0 -> 2, dials 2 -> 2
+PASS room_delivery events: via dial, then via open: open,dial,dial,open,open
+PASS ana's events chain by prev (no gap): join#2<-1 join#3<-2 msg#4<-3 msg#5<-4
+PASS status: 3 members, 2 present, 5 records: members=3 present=2 records=5
+ALL PASS
+```
+
+The reuse check shows that a dialed room connection stays open after the delivery that
+dialed it: `#serveRoom` keeps the connection's handler pending until it closes. Each
+connection was reused for the second line within `t_idle`.
+
+## Step 2: differences from the Rust chat app
+
+- `app` in the status is `chat`, from `static app`. The node's own status reports the wasm
+  library's placeholder `ts`, which the class replaces. The status keys are sorted, as
+  serde_json writes them.
+- The app's counters (`ChatStats`) are per node build, not per construction. After a
+  wasm panic a node is rebuilt without a new construction, and the counters and the rate
+  limiter restart. The counters are not on the wire. Tests read them with the RPC
+  `chatStats()`.
+- Debug-level `tracing` lines of the Rust app, such as "delivery stream: …", are not
+  written. They are below the default `LOG_LEVEL`.
+- The registry, and so routing, is per deployment. Endpoints minted in step 1's `iroh-ts`
+  are not registered and are not reachable after step 2 (design note 013, Consequences).
+
+## Step 2: the OpenTofu module
+
+Not applied; the user applies. `tofu fmt -check` and `tofu validate` pass on a scratch
+copy of `deploy/tofu` and `examples/deployment/infra`. The migration expressions,
+evaluated with `tofu console` on the same locals:
+
+| Live tag | Configuration | `migrations` sent |
+|---|---|---|
+| `v1` | `iroh_do` (default list) | null |
+| none | `iroh_do` (default list) | `{new_tag v1, new_sqlite_classes [endpoint, registry]}` |
+| `v1` | `iroh_ts` | `{old_tag v1, new_tag v2, new_sqlite_classes [Chat, Registry]}` |
+| `v2` | `iroh_ts` | null |
+| none | `iroh_ts` | `{new_tag v2, steps [[Echo], [Chat, Registry]]}` |
+| `vX` | `iroh_ts` | plan fails (precondition) |
+
+Expected first `just plan` after step 2:
+- `module.iroh_do`: no change. Its bindings, content and bound classes are unchanged, the
+  migration it sends is null as before, and its state's `migrations` is null (design note
+  011, phase 5).
+- `module.iroh_ts`: one in-place update of the script, with new content, the `CHAT` and
+  `REGISTRY` bindings, a new `BUNDLE_SHA256`, and `migrations` from step 1's `v1` object
+  to the `v2` step.
+- After that apply, a second plan shows `iroh_ts`'s `migrations` going to null. One more
+  apply clears it.
+
 ## Reproduce
 
 ```sh
@@ -397,6 +592,17 @@ npm test                                 # admin-test.mjs, evict-test.mjs (about
 npx wrangler dev --local --ip 127.0.0.1 --port 8799 --var ADMIN_TOKEN:local
 curl -s --resolve admin.localhost:8799:127.0.0.1 -X POST -H "Authorization: Bearer local" http://admin.localhost:8799/mint
 cargo run -p iroh-do-echo-client -- <E> hello --local 8799
+
+# Step 2: the deployment with both apps.
+cargo build -p iroh-do-chat -p iroh-do-test-peer
+cd ../../ts-deployment                   # examples/ts-deployment
+npm run check                            # also type-checks examples/chat/server
+npm run build                            # or, from the root: just build-ts
+npm test                                 # router-test.mjs, room-test.mjs (about 70 s)
+npx wrangler dev --local --ip 127.0.0.1 --port 8799 --var ADMIN_TOKEN:local
+curl -s --resolve admin.localhost:8799:127.0.0.1 -X POST -H "Authorization: Bearer local" \
+  -H 'Content-Type: application/json' --data-binary '{"app":"chat"}' http://admin.localhost:8799/mint
+cargo run -p iroh-do-chat -- --local --local-port 8799 lifecycle <E> --room
 ```
 
 `npm test` in `packages/iroh-do` leaves `pkg/` built with `test-panic`; `npm run build` in

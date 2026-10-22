@@ -21,9 +21,9 @@ local_port := env_var_or_default("LOCAL_PORT", "8787")
 wrangler_version := "4.130.0"
 # The TypeScript host's bundle. ts_build is the one command that builds it; it
 # must leave a wrangler dry-run outdir with manifest.json (deploy/BUILD.md) in ts_dist.
-ts_build := "npm --prefix " + root / "examples/echo/server" + " run build"
-ts_dist := root / "examples/echo/server/dist"
-ts_bundle_dir := root / "build/echo-ts"
+ts_build := "npm --prefix " + root / "examples/ts-deployment" + " run build"
+ts_dist := root / "examples/ts-deployment/dist"
+ts_bundle_dir := root / "build/iroh-ts"
 
 export WRANGLER_SEND_METRICS := "false"
 
@@ -64,7 +64,7 @@ bundle-info:
     echo "index.js:       $(size "$js") B"
     echo "index_bg.wasm:  $(size "$wasm") B raw, $(gzip -9c "$wasm" | wc -c | tr -d ' ') B gzip -9 (limit: 64 MiB uncompressed)"
 
-# Echo server bundle (TypeScript host) into build/echo-ts/, with its manifest.json.
+# The TypeScript deployment iroh-ts (examples/ts-deployment: chat, echo, registry) into build/iroh-ts/, with its manifest.json.
 build-ts:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -133,16 +133,25 @@ up: build build-ts _ts-token
 
 # Mint an endpoint of app APP (default chat) inside the Worker; write E (never the key) to
 # .demo/endpoint. LOCAL=1 mints in `just local-up`'s workerd instead, into .demo/endpoint.local.APP
-# (`just local-up` keeps its own room in .demo/endpoint.local).
+# (`just local-up` keeps its own room in .demo/endpoint.local). TS=1 mints in the TypeScript
+# deployment (module iroh_ts, *.iroh-ts.<zone>) into .demo/endpoint.ts.APP; the clients reach
+# its endpoints the same way, by E.
 mint APP="chat" LABEL="":
     #!/usr/bin/env bash
     set -euo pipefail
     export MINT_APP={{quote(APP)}}
     export MINT_LABEL={{quote(LABEL)}}
-    if [ -n "${LOCAL:-}" ]; then
+    if [ -n "${LOCAL:-}" ] && [ -n "${TS:-}" ]; then
+        echo "error: LOCAL=1 and TS=1 together are not supported; run examples/ts-deployment with npm run dev" >&2; exit 1
+    elif [ -n "${LOCAL:-}" ]; then
         port="${LOCAL_PORT:-$(cat "{{demo_dir}}/local-up.port" 2>/dev/null || echo 8787)}"
         out="{{demo_dir}}/endpoint.local.{{APP}}"; pre="LOCAL=1 "
         just _mint "http://admin.localhost:$port" "{{demo_dir}}/admin_token.local" "$out" "--resolve admin.localhost:$port:127.0.0.1"
+    elif [ -n "${TS:-}" ]; then
+        export TF_VAR_state_passphrase="$(cat "{{demo_dir}}/state_passphrase")"
+        admin=$(tofu -chdir="{{infra}}" output -raw admin_url_ts)
+        out="{{demo_dir}}/endpoint.ts.{{APP}}"; pre=""
+        just _mint "$admin" "{{demo_dir}}/admin_token_ts" "$out"
     else
         export TF_VAR_state_passphrase="$(cat "{{demo_dir}}/state_passphrase")"
         admin=$(tofu -chdir="{{infra}}" output -raw admin_url)
@@ -155,7 +164,8 @@ mint APP="chat" LABEL="":
     esac
 
 # Destroy endpoint E: close its sockets, delete its key and history, drop it from the list.
-# Cannot be undone. Asks first unless CONFIRM=1. LOCAL=1 targets the local workerd.
+# Cannot be undone. Asks first unless CONFIRM=1. LOCAL=1 targets the local workerd, TS=1 the
+# TypeScript deployment.
 destroy-room E:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -168,6 +178,10 @@ destroy-room E:
         admin="http://admin.localhost:$port"
         token="{{demo_dir}}/admin_token.local"
         extra=(--resolve "admin.localhost:$port:127.0.0.1")
+    elif [ -n "${TS:-}" ]; then
+        export TF_VAR_state_passphrase="$(cat "{{demo_dir}}/state_passphrase")"
+        admin=$(tofu -chdir="{{infra}}" output -raw admin_url_ts)
+        token="{{demo_dir}}/admin_token_ts"
     else
         export TF_VAR_state_passphrase="$(cat "{{demo_dir}}/state_passphrase")"
         admin=$(tofu -chdir="{{infra}}" output -raw admin_url)

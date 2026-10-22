@@ -1,0 +1,20 @@
+{
+  "name": "iroh-do-ts-deployment",
+  "private": true,
+  "type": "module",
+  "description": "The deployment iroh-ts: the chat and echo apps and the registry in one Worker script",
+  "dependencies": {
+    "iroh-do": "0.1.0",
+    "iroh-do-chat-server": "*",
+    "iroh-do-echo-server": "*"
+  },
+  "scripts": {
+    "build": "iroh-do-bundle --config wrangler.toml --outdir dist",
+    "types": "wrangler types",
+    "check": "npm run types && tsc --noEmit",
+    "dev": "wrangler dev --local --ip 127.0.0.1 --port ${LOCAL_PORT:-8799} --inspector-port $((${LOCAL_PORT:-8799} + 1000))",
+    "test:router": "node test/router-test.mjs",
+    "test:room": "node test/room-test.mjs",
+    "test": "npm run test:router && npm run test:room"
+  }
+}
