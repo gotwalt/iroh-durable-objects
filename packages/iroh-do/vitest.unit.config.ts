@@ -11,7 +11,13 @@ export default defineConfig({
       },
       {
         // --expose-gc: the leak test collects garbage itself.
-        test: { name: "node", include: ["test/node/**/*.test.ts"], environment: "node", pool: "forks", execArgv: ["--expose-gc"] },
+        test: {
+          name: "node",
+          include: ["test/node/**/*.test.ts"],
+          environment: "node",
+          pool: "forks",
+          execArgv: ["--expose-gc"],
+        },
       },
     ],
   },

@@ -85,6 +85,11 @@ export interface TestWorker {
   mint(body?: unknown): Promise<{ id: string; relay_url: string; published: boolean; app?: string }>;
   /** `GET /status/<E>` with the token: the full status, or null on 404. */
   status(id: string): Promise<Record<string, unknown> | null>;
+  /**
+   * The Durable Object named `name` in the namespace bound as `binding`, as an RPC stub typed
+   * by the caller: Miniflare's own types do not carry the class.
+   */
+  object<T>(binding: string, name: string): Promise<T>;
   /** The admin token the Worker was started with. */
   token: string;
   /** Stops Miniflare; deletes the storage unless `keep`. */
@@ -168,6 +173,13 @@ export async function startWorker(opts: WorkerOptions): Promise<TestWorker> {
     persistDir,
     logs,
     token,
+    object: async <T>(binding: string, name: string) => {
+      const ns = (await mf.getDurableObjectNamespace(binding, opts.script)) as unknown as {
+        idFromName(n: string): unknown;
+        get(id: unknown): unknown;
+      };
+      return ns.get(ns.idFromName(name)) as T;
+    },
     events: (event) => logs.filter((l) => l.includes(`event: '${event}'`)),
     fetch: fetchAt,
     admin,
@@ -254,7 +266,8 @@ export function spawnLines(command: string, args: string[], wrapper: string[] = 
   const exited = new Promise<number | null>((resolve) =>
     child.on("exit", (code) => {
       exitCode = code;
-      for (const w of waiters.splice(0)) w.reject(new Error(`${command} exited (${code}): ${stderr.trim().slice(-600)}`));
+      for (const w of waiters.splice(0))
+        w.reject(new Error(`${command} exited (${code}): ${stderr.trim().slice(-600)}`));
       resolve(code);
     }),
   );
@@ -272,7 +285,11 @@ export function spawnLines(command: string, args: string[], wrapper: string[] = 
         const timer = setTimeout(() => {
           const k = waiters.indexOf(w);
           if (k >= 0) waiters.splice(k, 1);
-          reject(new Error(`timed out after ${timeoutMs} ms waiting for a line of ${command}; lines: ${JSON.stringify(lines.slice(-5))}; stderr: ${stderr.trim().slice(-300)}`));
+          reject(
+            new Error(
+              `timed out after ${timeoutMs} ms waiting for a line of ${command}; lines: ${JSON.stringify(lines.slice(-5))}; stderr: ${stderr.trim().slice(-300)}`,
+            ),
+          );
         }, timeoutMs);
         const w = {
           pred,

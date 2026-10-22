@@ -24,7 +24,8 @@
     "pkg/iroh_do_wasm.d.ts",
     "pkg/iroh_do_wasm_bg.wasm",
     "pkg/FEATURES",
-    "scripts/bundle.mjs"
+    "scripts/bundle.mjs",
+    "src"
   ],
   "engines": {
     "node": ">=20.19"
@@ -43,11 +44,15 @@
     "build": "npm run build:wasm && npm run build:ts",
     "build:ts": "npm run types && tsc -p tsconfig.build.json",
     "types": "mkdir -p types && wrangler types --include-env=false --config test/unit/wrangler.toml types/runtime.d.ts && wrangler types --include-runtime=false --config test/unit/wrangler.toml types/test-env.d.ts",
-    "check": "npm run types && tsc -p tsconfig.json --noEmit",
+    "check": "npm run types && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "build:fixture": "node test/fixture/build.mjs",
     "test:unit": "vitest run --config vitest.unit.config.ts",
     "test:e2e": "npm run build:wasm-test && npm run build:fixture && vitest run --config vitest.e2e.config.ts",
     "test": "npm run test:unit && npm run test:e2e",
     "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.1",
+    "iroh-do-testing": "0.1.0"
   }
 }
