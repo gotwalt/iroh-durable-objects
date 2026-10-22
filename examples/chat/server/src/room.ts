@@ -14,6 +14,7 @@
 // so no other request can interleave: the object runs one event at a time and yields only at
 // an `await`.
 import { type BiStream, type Connection, type Endpoint, EndpointId } from "iroh-do";
+import { rethrowTrap } from "./errors";
 import { roomEvent } from "./events";
 import { background, errorText, type Logger } from "./log";
 import {
@@ -310,28 +311,36 @@ export class Room {
     this.#outboxes.delete(recipient);
   }
 
-  /** Writes `outbox` until it is empty or cancelled; lines queued meanwhile go in the next batch. */
+  /**
+   * Writes `outbox` until it is empty or cancelled; lines queued meanwhile go in the next batch.
+   * The outbox is removed however this ends: while it is registered, `#enqueue` only appends
+   * to it, so an outbox left behind by a delivery that threw would hold that member's
+   * deliveries forever.
+   */
   async #flush(recipient: string, outbox: Outbox): Promise<void> {
-    while (this.#outboxes.get(recipient) === outbox && outbox.lines.length > 0) {
-      const lines = outbox.lines.splice(0);
-      const started = Date.now();
-      const { ok, via } = await this.#deliver(recipient, lines.join(""));
-      const fields = { peer: recipient, events: lines.length, via, ok, ms: Date.now() - started };
-      if (ok) {
-        this.stats.deliveriesOk++;
-        this.#log.info("room_delivery", fields);
-      } else {
-        this.stats.deliveriesFailed++;
-        this.#log.warn("room_delivery", fields);
+    try {
+      while (this.#outboxes.get(recipient) === outbox && outbox.lines.length > 0) {
+        const lines = outbox.lines.splice(0);
+        const started = Date.now();
+        const { ok, via } = await this.#deliver(recipient, lines.join(""));
+        const fields = { peer: recipient, events: lines.length, via, ok, ms: Date.now() - started };
+        if (ok) {
+          this.stats.deliveriesOk++;
+          this.#log.info("room_delivery", fields);
+        } else {
+          this.stats.deliveriesFailed++;
+          this.#log.warn("room_delivery", fields);
+        }
       }
+    } finally {
+      if (this.#outboxes.get(recipient) === outbox) this.#outboxes.delete(recipient);
     }
-    if (this.#outboxes.get(recipient) === outbox) this.#outboxes.delete(recipient);
   }
 
   /** Writes `payload` to `recipient` on one unidirectional stream, reusing a connection if one is open. */
   async #deliver(recipient: string, payload: string): Promise<{ ok: boolean; via: Via }> {
-    const open = this.#connections.get(recipient);
-    if (open !== undefined && open.closeReason() === undefined && (await writeUni(open, payload))) {
+    const open = this.#openConnection(recipient);
+    if (open !== undefined && (await writeUni(open, payload))) {
       this.stats.deliveryReuses++;
       return { ok: true, via: "open" };
     }
@@ -348,6 +357,23 @@ export class Room {
     // The member may send its next requests on this connection.
     background(this.serve(conn), this.#log, "room connection");
     return { ok: await writeUni(conn, payload), via: "dial" };
+  }
+
+  /** The open connection to `peer` that the room keeps, if any; forgets a closed one. */
+  #openConnection(peer: string): Connection | undefined {
+    const conn = this.#connections.get(peer);
+    if (conn === undefined) return undefined;
+    let closed: boolean;
+    try {
+      closed = conn.closeReason() !== undefined;
+    } catch (error) {
+      // A connection of a wasm instance that was replaced throws on every call.
+      rethrowTrap(error);
+      closed = true;
+    }
+    if (!closed) return conn;
+    if (this.#connections.get(peer) === conn) this.#connections.delete(peer);
+    return undefined;
   }
 }
 
