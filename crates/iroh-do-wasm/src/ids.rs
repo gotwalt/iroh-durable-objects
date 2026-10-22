@@ -107,10 +107,12 @@ impl EndpointAddr {
         Vec::new()
     }
 
-    /// The relay URL, if known.
-    #[wasm_bindgen(js_name = relayUrl)]
-    pub fn relay_url(&self) -> Option<String> {
-        self.relay_url.clone()
+    /// The relay URL, or null, as in `@number0/iroh`.
+    #[wasm_bindgen(js_name = relayUrl, unchecked_return_type = "string | null")]
+    pub fn relay_url(&self) -> JsValue {
+        self.relay_url
+            .as_deref()
+            .map_or(JsValue::NULL, JsValue::from_str)
     }
 
     /// Returns true if both addresses have the same values.
@@ -118,11 +120,13 @@ impl EndpointAddr {
         self.id == other.id && self.relay_url == other.relay_url
     }
 
+    /// `<id> relay=<url>`, with the id in the form `EndpointId.toString` gives, as in
+    /// `@number0/iroh`.
     #[wasm_bindgen(js_name = toString)]
     pub fn to_string_js(&self) -> String {
         match &self.relay_url {
-            Some(u) => format!("{} via {u}", self.id.to_z32()),
-            None => self.id.to_z32(),
+            Some(u) => format!("{} relay={u}", self.id),
+            None => self.id.to_string(),
         }
     }
 }
@@ -139,12 +143,13 @@ pub(crate) fn peer_from_js(v: &JsValue) -> Result<iroh::EndpointId, JsValue> {
             .map_err(|_| crate::js_err(format!("expected EndpointId or EndpointAddr ({name})")))?;
         f.call0(obj)
     };
-    let id = if js_sys::Reflect::has(v, &JsValue::from_str("relayUrl"))? {
-        call(v, "id")?
-    } else {
-        v.clone()
-    };
+    let from_addr = js_sys::Reflect::has(v, &JsValue::from_str("relayUrl"))?;
+    let id = if from_addr { call(v, "id")? } else { v.clone() };
     let bytes = js_sys::Uint8Array::new(&call(&id, "toBytes")?).to_vec();
+    if from_addr {
+        // `EndpointAddr.id()` made a new wrapper; free it now rather than at collection.
+        call(&id, "free")?;
+    }
     let arr: [u8; 32] = bytes
         .as_slice()
         .try_into()

@@ -23,6 +23,7 @@ iroh-relay-ingress = { path = "../iroh-relay-ingress" }
 iroh = { workspace = true }
 iroh-base = { workspace = true, features = ["key"] }
 serde_json = "1"
+bytes = "1"
 tracing = "0.1"
 # For the JSON layer of crates/iroh-do/src/log.rs, included by path.
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry", "std"] }

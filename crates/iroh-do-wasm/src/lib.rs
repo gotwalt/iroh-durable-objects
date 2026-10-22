@@ -35,7 +35,7 @@ pub use ids::{EndpointAddr, EndpointId};
 use iroh_do_core::pkarr;
 use js_sys::{Object, Reflect};
 pub use node::{Endpoint, WasmNode};
-pub use streams::{BiStream, Connection, RecvStream, SendStream};
+pub use streams::{Connection, RecvStream, SendStream};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -146,7 +146,7 @@ export interface PkarrRecord {
 #[wasm_bindgen(js_name = pkarrRecord, unchecked_return_type = "PkarrRecord")]
 pub fn pkarr_record(secret: &[u8], relay_url: &str, pkarr_relay: &str) -> Result<JsValue, JsError> {
     let req = pkarr::build_publish(&secret_key(secret)?, relay_url, pkarr_relay)
-        .map_err(|e| JsError::new(&format!("pkarr record: {e:?}")))?;
+        .map_err(|e| JsError::new(&format!("pkarr record: {e}")))?;
     let out = Object::new();
     let set = |k: &str, v: JsValue| Reflect::set(&out, &JsValue::from_str(k), &v);
     set("url", req.url.into()).map_err(|_| JsError::new("set url"))?;
@@ -175,6 +175,30 @@ pub fn pkarr_confirm(
     ))
 }
 
+/// The number of nodes in this wasm instance whose state is still held: nodes the object has
+/// not detached and the garbage collector has not freed. For leak checks.
+#[wasm_bindgen(js_name = liveNodes)]
+pub fn live_nodes() -> usize {
+    host::count()
+}
+
+/// A JavaScript `Error` with `e` as its message.
 pub(crate) fn js_err(e: impl std::fmt::Display) -> JsValue {
     JsError::new(&e.to_string()).into()
+}
+
+/// A JavaScript `Error` whose `name` is the Rust error type (`ReadError`, `WriteError`,
+/// `ConnectionError`, ...), so that callers can tell failures apart without parsing messages.
+pub(crate) fn named_err(name: &str, e: impl std::fmt::Display) -> JsValue {
+    let err = js_sys::Error::new(&e.to_string());
+    err.set_name(name);
+    err.into()
+}
+
+/// The text of a value JavaScript threw: `name: message` for an `Error`.
+pub(crate) fn js_message(v: &JsValue) -> String {
+    if let Some(e) = v.dyn_ref::<js_sys::Error>() {
+        return format!("{}: {}", String::from(e.name()), String::from(e.message()));
+    }
+    v.as_string().unwrap_or_else(|| format!("{v:?}"))
 }

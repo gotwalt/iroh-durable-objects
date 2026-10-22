@@ -16,38 +16,40 @@
 
 use std::future::Future;
 
-use iroh::{
-    EndpointId,
-    endpoint::Connection,
-    protocol::AcceptError,
-};
+use iroh::{endpoint::Connection, protocol::AcceptError};
 use iroh_do_core::{App, Ctx, Idle, LocalProtocolHandler, Protocols};
 use wasm_bindgen_futures::JsFuture;
 
-use crate::host;
+use crate::host::{self, Token};
 
 /// Reason of the close when the handler's promise settles.
 const REASON_DONE: &str = "done";
 
-/// The app of every node this library builds. Its protocols come from the object's entry in
+/// The app of every node this library builds. Its protocols come from the node's entry in
 /// [`host`], which `WasmNode::new` filled in from `NodeOptions.protocols`.
 pub(crate) struct JsApp {
     ctx: Ctx,
+    /// The node's entry; `None` only if the app was built outside `WasmNode::new`.
+    token: Option<Token>,
 }
 
 impl App for JsApp {
     const NAME: &'static str = "ts";
 
     fn new(ctx: &Ctx) -> Self {
-        JsApp { ctx: ctx.clone() }
+        // `Node::new` builds the app synchronously, inside `host::building`.
+        JsApp {
+            ctx: ctx.clone(),
+            token: host::current_build(),
+        }
     }
 
     fn protocols(&self, _ctx: &Ctx, p: &mut Protocols) {
-        let id = self.ctx.id();
-        let alpns = host::with(&id, |e| e.alpns.clone()).unwrap_or_default();
+        let Some(token) = self.token else { return };
+        let alpns = host::with(token, |e| e.alpns.clone()).unwrap_or_default();
         for (alpn, idle) in alpns {
             let h = JsHandler {
-                id,
+                token,
                 ctx: self.ctx.clone(),
                 alpn: alpn.clone(),
             };
@@ -57,7 +59,7 @@ impl App for JsApp {
 }
 
 struct JsHandler {
-    id: EndpointId,
+    token: Token,
     ctx: Ctx,
     alpn: Vec<u8>,
 }
@@ -72,11 +74,11 @@ impl std::fmt::Debug for JsHandler {
 
 impl LocalProtocolHandler for JsHandler {
     fn accept(&self, conn: Connection) -> impl Future<Output = Result<(), AcceptError>> {
-        let id = self.id;
+        let token = self.token;
         let alpn = String::from_utf8_lossy(&self.alpn).into_owned();
         let activity = self.ctx.activity(&conn);
         async move {
-            let Some(h) = host::host(&id) else {
+            let Some(h) = host::host(token) else {
                 return Ok(());
             };
             let js_conn = crate::streams::Connection::new(conn.clone(), activity.clone());
@@ -88,7 +90,7 @@ impl LocalProtocolHandler for JsHandler {
                 Some(a) => a.close(&conn, REASON_DONE),
                 None => conn.close(iroh_do_core::CLOSE_OK, REASON_DONE.as_bytes()),
             }
-            res.map_err(|e| AcceptError::from_err(JsErr(format!("{e:?}"))))
+            res.map_err(|e| AcceptError::from_err(JsErr(crate::js_message(&e))))
         }
     }
 }
