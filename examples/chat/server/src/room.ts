@@ -40,17 +40,6 @@ import {
 import { RateLimiter } from "./rate-limit";
 import { type ChatStorage, type Member, type NewRecord, type RoomRecord, StorageError } from "./storage";
 
-/** Counters since the object was constructed, for tests. */
-export interface RoomStats {
-  deliveriesOk: number;
-  deliveriesFailed: number;
-  /** Connections dialed to deliver events. */
-  deliveryDials: number;
-  /** Delivery streams opened on a connection that was already open. */
-  deliveryReuses: number;
-  rateLimited: number;
-}
-
 /** Event lines waiting for one recipient. */
 interface Outbox {
   /** At most OUTBOX_MAX_LINES. */
@@ -85,13 +74,6 @@ interface Handled {
 const REQUEST_FAILED = 1n;
 
 export class Room {
-  readonly stats: RoomStats = {
-    deliveriesOk: 0,
-    deliveriesFailed: 0,
-    deliveryDials: 0,
-    deliveryReuses: 0,
-    rateLimited: 0,
-  };
   readonly #storage: ChatStorage;
   readonly #endpoint: () => Endpoint;
   readonly #log: Logger;
@@ -185,7 +167,6 @@ export class Room {
 
   #respond(peer: string, request: RoomRequest): Handled {
     if (!this.#limiter.allow(peer, Date.now())) {
-      this.stats.rateLimited++;
       return { replies: [errorLine(ROOM_ERRORS.rateLimited)], nick: "" };
     }
     try {
@@ -386,13 +367,8 @@ export class Room {
         const started = Date.now();
         const { ok, via } = await this.#deliver(recipient, lines.join(""));
         const fields = { peer: recipient, events: lines.length, dropped, via, ok, ms: Date.now() - started };
-        if (ok) {
-          this.stats.deliveriesOk++;
-          this.#log.info("room_delivery", fields);
-        } else {
-          this.stats.deliveriesFailed++;
-          this.#log.warn("room_delivery", fields);
-        }
+        if (ok) this.#log.info("room_delivery", fields);
+        else this.#log.warn("room_delivery", fields);
       }
     } finally {
       if (this.#outboxes.get(recipient) === outbox) this.#outboxes.delete(recipient);
@@ -403,7 +379,6 @@ export class Room {
   async #deliver(recipient: string, payload: string): Promise<{ ok: boolean; via: Via }> {
     const open = this.#openConnection(recipient);
     if (open !== undefined && (await writeUni(open, payload))) {
-      this.stats.deliveryReuses++;
       return { ok: true, via: "open" };
     }
     if (!this.#presentPeers().has(recipient)) return { ok: false, via: "none" };
@@ -416,7 +391,6 @@ export class Room {
       this.#log.warn("room_dial_failed", { peer: recipient, error: errorText(error) });
       return { ok: false, via: "dial" };
     }
-    this.stats.deliveryDials++;
     // The member may send its next requests on this connection.
     background(this.serve(conn), this.#log, "room connection");
     return { ok: await writeUni(conn, payload), via: "dial" };

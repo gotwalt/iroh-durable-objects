@@ -6,21 +6,19 @@ import { Ctl } from "./ctl";
 import { serveEcho } from "./echo";
 import { rethrowTrap } from "./errors";
 import { errorText, logger } from "./log";
-import { DialBack, type DialBackStats } from "./notify";
+import { DialBack } from "./notify";
 import { CTL_ALPN, ECHO_ALPN, ROOM_ALPN } from "./protocol";
-import { Room, type RoomStats } from "./room";
+import { Room } from "./room";
 import { ChatStorage, PRUNE_KEY } from "./storage";
 
 /** The bindings the class reads. */
 export interface ChatEnv {
   /** This class's namespace; the base class checks a minted key against the object's name. */
-  CHAT: DurableObjectNamespace;
+  CHAT: DurableObjectNamespace<Chat>;
   /** Shorter connection limits for tests, in milliseconds; unbound in the deployment. */
   T_IDLE_MS?: string;
   T_SILENT_MS?: string;
 }
-
-export type ChatStats = RoomStats & DialBackStats;
 
 /** Schedule keys of dial-backs: the prefix, then the peer's endpoint id in z-base-32. */
 const DIAL_BACK_KEY = "callback:";
@@ -98,13 +96,6 @@ export class Chat extends IrohDurableObject<ChatEnv> {
     if (idle !== undefined) timings.tIdleMs = idle;
     if (silent !== undefined) timings.tSilentMs = silent;
     return timings;
-  }
-
-  /** RPC, for tests: the counters since construction, or null before mint. */
-  async chatStats(): Promise<ChatStats | null> {
-    // status() builds the node on the construction's first event, and is null before mint.
-    if ((await this.status()) === null) return null;
-    return { ...this.#room.stats, ...this.#dialBack.stats };
   }
 
   /** The endpoint id, z-base-32. Builds the node if needed; throws before mint. */

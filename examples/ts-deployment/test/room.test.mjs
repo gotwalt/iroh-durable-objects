@@ -38,6 +38,8 @@ describe("chat room across a forced hibernation", () => {
   let anaReady;
   let warm;
   let afterEviction;
+  /** Index of the first log line after the eviction. */
+  let evicted;
 
   const member = (nick, extra) => {
     const c = runChat(port, ["chat", E, "--nick", nick, "--state-dir", state, ...extra]);
@@ -49,10 +51,13 @@ describe("chat room across a forced hibernation", () => {
     const ev = json(l);
     return ev !== null && ev.hist === undefined && pred(ev);
   };
-  const chatStats = async () => {
-    const ns = await w.mf.getDurableObjectNamespace("CHAT", SCRIPT);
-    return ns.get(ns.idFromName(E)).chatStats();
-  };
+  /** The `room_delivery` log lines from index `from` of the Worker's log on, as `{ via, ok }`. */
+  const deliveries = (from) =>
+    w.logs
+      .slice(from)
+      .filter((l) => /event["']?: ?["']room_delivery["']/.test(l))
+      .map((l) => ({ via: /via: '(\w+)'/.exec(l)?.[1], ok: /\bok: true\b/.test(l) }));
+  const count = (list, via) => list.filter((d) => d.via === via && d.ok).length;
 
   beforeAll(async () => {
     w = startWorker({ dist, script: SCRIPT, classes, port });
@@ -95,8 +100,7 @@ describe("chat room across a forced hibernation", () => {
     expect(afterEviction.wakes).toBe(warm.wakes + 1);
     expect([...afterEviction.sockets].sort()).toEqual([...warm.sockets].sort());
     expect(afterEviction.present).toBe(2);
-    const fresh = await chatStats();
-    expect(fresh).toMatchObject({ deliveriesOk: 0, deliveryDials: 0 });
+    evicted = w.logs.length;
   }, 60_000);
 
   test("deliveries dial the members back, then reuse the dialed connections", async () => {
@@ -109,9 +113,11 @@ describe("chat room across a forced hibernation", () => {
     const b1 = json(await bo.waitFor(live((ev) => ev.t === "msg" && ev.text === text1), 20_000));
     expect(a1.seq).toBe(b1.seq);
     expect(a1.nick).toBe("cy");
-    const st1 = await chatStats();
-    expect(st1.deliveryDials).toBeGreaterThanOrEqual(2);
-    expect(st1.deliveriesFailed).toBe(0);
+    // The object woke without connections, so both deliveries dialed.
+    const first = deliveries(evicted);
+    expect(count(first, "dial")).toBeGreaterThanOrEqual(2);
+    expect(first.filter((d) => !d.ok)).toEqual([]);
+    const second = w.logs.length;
 
     const text2 = "second line, within t_idle";
     const cy2 = member("cy", ["--say", text2]);
@@ -119,12 +125,9 @@ describe("chat room across a forced hibernation", () => {
     await cy2.exited;
     await ana.waitFor(live((ev) => ev.t === "msg" && ev.text === text2), 20_000);
     await bo.waitFor(live((ev) => ev.t === "msg" && ev.text === text2), 20_000);
-    const st2 = await chatStats();
-    expect(st2.deliveryReuses).toBeGreaterThanOrEqual(st1.deliveryReuses + 2);
-    expect(st2.deliveriesFailed).toBe(0);
-    const via = w.events("room_delivery").map((l) => /via: '(\w+)'/.exec(l)?.[1]);
-    expect(via).toContain("dial");
-    expect(via).toContain("open");
+    const reused = deliveries(second);
+    expect(count(reused, "open")).toBeGreaterThanOrEqual(2);
+    expect(reused.filter((d) => !d.ok)).toEqual([]);
   }, 120_000);
 
   test("every member saw the same events, chained by prev", async () => {

@@ -577,10 +577,11 @@ rewritten class:
 - `app` in the status is `chat`, from `static app`. The node's own status reports the wasm
   library's placeholder `ts`, which the class replaces. The status keys are sorted, as
   serde_json writes them.
-- The counters (`ChatStats`) and the rate limiter are fields of the object, so they last
-  for one construction, as the Rust app's do. A node rebuilt after a wasm panic keeps
-  them; only the connections kept for reuse are dropped, since they belonged to the old
-  node. The counters are not on the wire. Tests read them with the RPC `chatStats()`.
+- The class has no counters like the Rust app's `ChatStats` and no RPC for tests: tests
+  read deliveries from the `room_delivery` log lines (`via`, `ok`). The rate limiter is a
+  field of the object, so it lasts for one construction, as the Rust app's does. A node
+  rebuilt after a wasm panic keeps it; only the connections kept for reuse are dropped,
+  since they belonged to the old node.
 - Storage failures are not turned into defaults. The Rust app logs `chat_sql_failed` and
   goes on with an empty result or 0. The class answers a room request whose write was
   rolled back with `storage error` and logs `room_request_failed` with the cause; a ctl

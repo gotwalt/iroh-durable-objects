@@ -11,11 +11,6 @@ const LINGER_MS = 5_000;
 /** QUIC application close code 0, as the node closes connections whose handler returned. */
 const CLOSE_OK = 0n;
 
-export interface DialBackStats {
-  dialBacksOk: number;
-  dialBacksFailed: number;
-}
-
 export interface DialBackOptions {
   storage: ChatStorage;
   log: Logger;
@@ -26,7 +21,6 @@ export interface DialBackOptions {
 }
 
 export class DialBack {
-  readonly stats: DialBackStats = { dialBacksOk: 0, dialBacksFailed: 0 };
   readonly #options: DialBackOptions;
 
   constructor(options: DialBackOptions) {
@@ -75,11 +69,9 @@ export class DialBack {
     const ms = Date.now() - started;
     let text: string;
     if (stage === undefined) {
-      this.stats.dialBacksOk++;
       log.info("dial_back", { peer, ok: true, ms });
       text = "delivered";
     } else {
-      this.stats.dialBacksFailed++;
       log.warn("dial_back", { peer, ok: false, ms, error: `${stage}: ${errorText(error)}` });
       text = `failed: ${errorText(error)}`;
     }
