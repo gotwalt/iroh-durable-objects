@@ -17,3 +17,6 @@ upstream/**/target/
 *.pem
 *.key
 /dist
+
+# Chat client state (--state-dir): member identity keys.
+.tester/
