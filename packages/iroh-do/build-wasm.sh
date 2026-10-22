@@ -34,7 +34,7 @@ if [[ "$have" != *"$want"* ]]; then
 fi
 
 cd "$repo"
-cargo build -p iroh-do-wasm --target wasm32-unknown-unknown --release ${features:+--features "$features"}
+cargo build --locked -p iroh-do-wasm --target wasm32-unknown-unknown --release ${features:+--features "$features"}
 target="${CARGO_TARGET_DIR:-$repo/target}"
 rm -rf "$here/pkg"
 # --experimental-reset-state-function generates `__wbg_reset_state`, which instantiates the
