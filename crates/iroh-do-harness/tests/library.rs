@@ -101,6 +101,27 @@ async fn warm_and_quiet(obj: &DoObject, max: Duration) {
     }
 }
 
+/// The host's bind callbacks run outside the node's lock: they can read the node's state,
+/// which is Active when the endpoint is bound and no longer Active once it is closed.
+#[tokio::test(flavor = "multi_thread")]
+async fn bind_callbacks_may_reenter_the_node() {
+    let h = Harness::start().await.unwrap();
+    let obj = h.mint::<EchoApp>(Timings::default());
+    let ep = peer(vec![]).await;
+    let conn = timeout(Duration::from_secs(10), ep.connect(addr(&h, &obj), ECHO))
+        .await
+        .expect("connect timed out (a host callback deadlocked?)")
+        .expect("connect");
+    assert_eq!(echo(&conn, b"x").await, b"x");
+    conn.close(0u32.into(), b"bye!");
+    warm_and_quiet(&obj, Duration::from_secs(10)).await;
+    assert_eq!(
+        obj.bind_callbacks(),
+        vec![("built", State::Active), ("closed", State::Warm)]
+    );
+    ep.close().await;
+}
+
 /// iroh's echo handler answers stock peers, the endpoint is dropped once the peer closes, and
 /// the object hibernates and serves again with a new endpoint.
 #[tokio::test(flavor = "multi_thread")]
