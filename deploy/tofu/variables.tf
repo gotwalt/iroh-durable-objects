@@ -41,8 +41,45 @@ variable "script_name" {
 }
 
 variable "worker_bundle_dir" {
-  description = "Directory holding index.js and index_bg.wasm, as deploy/build-worker.sh writes them."
+  description = "Directory holding index.js and index_bg.wasm, as deploy/build-worker.sh writes them. Set this or worker_manifest, not both."
   type        = string
+  default     = null
+}
+
+variable "worker_manifest" {
+  description = "Path to the manifest.json of a wrangler dry-run outdir (deploy/BUILD.md): main_module, modules and bundle_sha256. Paths in it are relative to its directory. Set this or worker_bundle_dir, not both."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = (var.worker_manifest == null) != (var.worker_bundle_dir == null)
+    error_message = "Set exactly one of worker_bundle_dir and worker_manifest."
+  }
+}
+
+variable "endpoint_class_name" {
+  description = "Durable Object class holding one endpoint per object. Cloudflare names the namespace <script_name>_<class>; renaming a class on a live script is a delete plus a create."
+  type        = string
+  default     = "endpoint"
+}
+
+variable "endpoint_binding_name" {
+  description = "Binding of the endpoint class's namespace."
+  type        = string
+  default     = "ENDPOINTS"
+}
+
+variable "registry_class_name" {
+  description = "Durable Object class of the endpoint list. null binds no registry and migrates no class for it."
+  type        = string
+  default     = "registry"
+  nullable    = true
+}
+
+variable "registry_binding_name" {
+  description = "Binding of the registry class's namespace; unused when registry_class_name is null."
+  type        = string
+  default     = "REGISTRY"
 }
 
 variable "admin_token" {

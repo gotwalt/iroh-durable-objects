@@ -35,6 +35,43 @@ module "iroh_do" {
 }
 ```
 
+The bundle is given in one of two ways; exactly one input must be set.
+
+- `worker_bundle_dir`: the directory `deploy/build-worker.sh` writes, with
+  `index.js` and `index_bg.wasm`. The Rust deployment uses this.
+- `worker_manifest`: the path to the `manifest.json` of a wrangler dry-run
+  outdir (format in `deploy/BUILD.md`). The main module, one uploaded part per
+  entry of `modules` (keyed by `name`, which wrangler derives from the content
+  hash) and the `BUNDLE_SHA256` binding come from it. Paths in the manifest are
+  relative to its directory. A precondition on the script fails the plan unless
+  the main module imports each part as `"./<name>"`, because the provider does
+  not check part names and a mismatch would fail only at apply.
+
+```hcl
+module "iroh_ts" {
+  source = "<path or git URL>/deploy/tofu"
+
+  account_id      = "…"
+  zone_id         = "…"
+  zone_name       = "example.com"
+  hostname_prefix = "iroh-ts"
+  script_name     = "iroh-ts"
+  worker_manifest = "build/echo-ts/manifest.json"
+  admin_token     = var.admin_token_ts
+
+  endpoint_class_name   = "Echo"    # default "endpoint"
+  endpoint_binding_name = "ENDPOINTS"
+  registry_class_name   = null      # default "registry"; null binds no registry
+}
+```
+
+`endpoint_class_name`, `endpoint_binding_name`, `registry_class_name` and
+`registry_binding_name` default to the Rust deployment's `endpoint`,
+`ENDPOINTS`, `registry` and `REGISTRY`. The migration lists the classes that
+are bound. Several instances of the module can share a root module and a zone
+if each has its own `hostname_prefix` and `script_name`; each creates its own
+certificate pack.
+
 The other inputs and their defaults are in `variables.tf`; the outputs
 (`admin_url`, `endpoint_url_template`, `zone_suffix`, `script_name`) in
 `outputs.tf`. The root module should
@@ -99,6 +136,15 @@ instead.
 
 ## This repository's deployment
 
+`examples/deployment/infra/` instantiates the module twice: `module.iroh_do`,
+the Rust bundle from `build/worker/` at `*.iroh-do.<zone>`, and
+`module.iroh_ts`, the TypeScript echo server from `build/echo-ts/manifest.json`
+at `*.iroh-ts.<zone>` (design note 013). They are separate scripts with
+separate Durable Object namespaces, certificates and admin tokens. To change
+the TypeScript instance's class or binding name, edit `module "iroh_ts"` in
+`main.tf`. `just build-ts` builds `build/echo-ts/`, and `just plan` and
+`just apply` cover both modules; they need that directory to exist.
+
 Run everything through the `justfile` at the repository root. It passes secrets
 through the environment and never prints them.
 
@@ -112,9 +158,11 @@ just plan     # should report zero diff
 just down     # typed confirmation, then tofu destroy (deletes every identity)
 ```
 
-`just up` creates two secrets in `.demo/` (gitignored, mode 600).
+`just up` creates three secrets in `.demo/` (gitignored, mode 600).
 `.demo/admin_token` becomes `TF_VAR_admin_token`; it authorizes `POST /mint`
 and nothing else, and there is no endpoint that returns keys.
+`.demo/admin_token_ts` is the same for `module.iroh_ts`
+(`TF_VAR_admin_token_ts`); `just plan`, `apply` and `down` create it if missing.
 `.demo/state_passphrase` becomes `TF_VAR_state_passphrase` and encrypts state
 and plan files. To run `tofu` by hand, export both variables the same way.
 `just infra-check` runs `fmt` and `validate` without credentials.
