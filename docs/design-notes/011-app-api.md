@@ -285,11 +285,29 @@ open (limit `t_silent`, 60 s) was rechecked only after 15 s, after the stream
 had long closed. `members_exchange_messages` failed two runs in three. The step
 is now a quarter of the shorter limit.
 
-### Phase 5: production
+### Phase 5: production (2026-10-22)
 
-Pending the deployment owner's approval: `just down`, then `just up` with a
-saved plan shown first, then `just mint chat`, `just mint echo`, `just demo`,
-`just demo --room` and the echo client by EndpointId alone.
+The deployment was replaced with `tofu apply` of a saved plan rather than
+`just down` and `just up`, which would also have deleted and reissued the ACM
+certificate. The plan replaced the script (`iroh-do-chat` deleted with every
+object and key, `iroh-do` created with migration `v1`) and updated the
+wildcard route in place. The route update failed with "failed to make http
+request": Cloudflare had deleted the route with the old script. A second
+saved plan created the route and dropped the applied migration from state,
+after which `tofu plan` showed no changes. DNS and the certificate were not
+touched.
+
+- `just demo` against a new chat endpoint: all 26 checks pass. First contact
+  746 ms, idle close after 9.9 s, reconnect after hibernation 81 ms, dial-back
+  from a hibernated object 84 ms after the scheduled time.
+- `just demo --room`: all checks pass. The room hibernated while a member was
+  present (wakes 5 → 6), and messages were delivered by dial-back in 119 ms and
+  82 ms.
+- `iroh-do-echo-client <E>` against a new echo endpoint, given only `E`
+  (default discovery): connected in 746 ms, round trip 862 ms; a second run
+  283 ms and 330 ms; after 20 s idle, 445 ms and 505 ms, on a new object
+  (wakes 2). Each run is a new client process, so each includes its own
+  address lookup.
 
 ## Risks
 
