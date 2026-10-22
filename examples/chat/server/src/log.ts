@@ -19,7 +19,10 @@ export type EventName =
   | "prune_schedule_failed"
   | "task_failed";
 
-export type Fields = Readonly<Record<string, string | number | boolean>>;
+/** An event's own fields. The keys every line has are refused, so a field cannot replace them. */
+export type Fields = Readonly<Record<string, string | number | boolean>> & {
+  readonly [K in "level" | "target" | "message" | "event" | "endpoint"]?: never;
+};
 
 export interface Logger {
   info(event: EventName, fields: Fields): void;
@@ -29,17 +32,14 @@ export interface Logger {
 
 /**
  * A logger for `target`. `endpoint` names the object's endpoint on every line; it is called
- * only when a line is written.
+ * only when a line is written, must not throw, and returns undefined while the object has
+ * no endpoint, before mint. The line then has no `endpoint`.
  */
-export function logger(target: Target, endpoint: () => string): Logger {
-  const line = (level: "info" | "warn" | "error", event: EventName, fields: Fields) => ({
-    level,
-    target,
-    message: event,
-    event,
-    endpoint: endpoint(),
-    ...fields,
-  });
+export function logger(target: Target, endpoint: () => string | undefined): Logger {
+  const line = (level: "info" | "warn" | "error", event: EventName, fields: Fields) => {
+    const id = endpoint();
+    return { level, target, message: event, event, ...(id === undefined ? {} : { endpoint: id }), ...fields };
+  };
   return {
     info: (event, fields) => console.log(line("info", event, fields)),
     warn: (event, fields) => console.warn(line("warn", event, fields)),

@@ -33,8 +33,8 @@ export class Chat extends IrohDurableObject<ChatEnv> {
   readonly #room: Room;
   readonly #ctl: Ctl;
   readonly #dialBack: DialBack;
-  readonly #log = logger("chat", () => this.#endpointId());
-  readonly #echoLog = logger("chat.echo", () => this.#endpointId());
+  readonly #log = logger("chat", () => this.#logEndpoint());
+  readonly #echoLog = logger("chat.echo", () => this.#logEndpoint());
   #id: string | undefined;
 
   constructor(ctx: DurableObjectState, env: ChatEnv) {
@@ -46,18 +46,18 @@ export class Chat extends IrohDurableObject<ChatEnv> {
     // minted, or about to be, create them. The exception is a destroyed endpoint reached
     // through another isolate's stale registry cache, which gets empty tables again.
     this.#storage.createSchema();
-    const endpointId = () => this.#endpointId();
-    this.#room = new Room(this.#storage, () => this.endpoint, logger("chat.room", endpointId));
+    const logEndpoint = () => this.#logEndpoint();
+    this.#room = new Room(this.#storage, () => this.endpoint, logger("chat.room", logEndpoint));
     this.#ctl = new Ctl({
       storage: this.#storage,
-      log: logger("chat.ctl", endpointId),
-      endpointId,
+      log: logger("chat.ctl", logEndpoint),
+      endpointId: () => this.#endpointId(),
       status: () => this.endpointStatus(),
       scheduleDialBack: (peer, delayMs) => this.schedule(DIAL_BACK_KEY + peer, delayMs),
     });
     this.#dialBack = new DialBack({
       storage: this.#storage,
-      log: logger("chat.notify", endpointId),
+      log: logger("chat.notify", logEndpoint),
       endpoint: () => this.endpoint,
       wakes: () => this.#wakes(),
     });
@@ -124,6 +124,18 @@ export class Chat extends IrohDurableObject<ChatEnv> {
     } catch (error) {
       rethrowTrap(error);
       this.#log.error("prune_schedule_failed", { error: errorText(error) });
+    }
+  }
+
+  /** The endpoint id for a log line, or undefined before mint; reads wasm once per object. */
+  #logEndpoint(): string | undefined {
+    if (this.#id !== undefined) return this.#id;
+    try {
+      return this.#endpointId();
+    } catch (error) {
+      // `this.endpoint` throws until the object is minted.
+      rethrowTrap(error);
+      return undefined;
     }
   }
 
