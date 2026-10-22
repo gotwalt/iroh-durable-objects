@@ -41,12 +41,10 @@ root in `examples/deployment/infra` configures the provider and encryption,
 calls the module, and passes its variables. `worker_bundle_dir` has no default
 in the module; the root passes `../../../build/worker`.
 
-The resources keep their state through `moved` blocks in the root, from
-`cloudflare_*.…` to `module.iroh_do.cloudflare_*.…`. A plan after the move shows
-the four moves and one in-place update of the script: the provider stores
-`content_file` as written, and the path changed from `../build/worker/index.js`
-to `../../../build/worker/index.js`. Applying it uploads the same bundle again,
-which restarts live objects but keeps their storage.
+The resources moved in state once, with `tofu state mv` from `cloudflare_*.…`
+to `module.iroh_do.cloudflare_*.…`, so the configuration carries no `moved`
+blocks. The state from before the move is kept in
+`.demo/state-backup-pre-reorg/`.
 
 ### Cleanup
 
@@ -82,7 +80,9 @@ The split was also a chance to remove what earlier workarounds had left:
 - `node tests/workerd/{evict,clock,destroy,registry}-test.mjs`: all pass.
 - `LOCAL_PORT=8799 just local`: all checks pass.
 - `just infra-check` (fmt and validate of the root with the module): passes.
-- `just plan` against production after the cleanup: three moves, the script's
-  in-place update (bundle path, and the wasm rebuilt from the new layout), and
-  the removed `certificate_status` output. The fourth move, of the script
-  itself, shows as its update.
+- `just plan` against production after the state move and the cleanup: two
+  in-place updates and no moves. The script is uploaded again: the provider
+  stores `content_file` as written, and the path changed from
+  `../build/worker/index.js` to `../../../build/worker/index.js`, and the wasm
+  rebuilt from the new layout differs in embedded source paths. The DNS
+  record's comment text changes. The `certificate_status` output is removed.

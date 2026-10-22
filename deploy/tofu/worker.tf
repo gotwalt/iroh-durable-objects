@@ -1,35 +1,21 @@
-# The Worker script: a bundle built from a crate that invokes `iroh_do::worker!`
-# (deploy/build-worker.sh), containing the router and the Durable Object classes
-# `endpoint` and `registry`.
-
 locals {
   zone_suffix = "${var.hostname_prefix}.${var.zone_name}"
 
   bundle_js   = "${var.worker_bundle_dir}/index.js"
   bundle_wasm = "${var.worker_bundle_dir}/index_bg.wasm"
 
-  # Content address of the bundle, bound as BUNDLE_SHA256 and reported by every
-  # endpoint's status. The provider treats files[*].content_sha256 as computed,
-  # so a rebuild that changes only the wasm would not show in a plan without
-  # this binding. `just build` prints the same value.
+  # Bound as BUNDLE_SHA256 and reported in each endpoint's status. It also makes
+  # a wasm-only rebuild show in the plan, which files[*].content_sha256 does not.
   bundle_sha256 = sha256("${filesha256(local.bundle_js)}${filesha256(local.bundle_wasm)}")
 
-  # The Durable Object classes, created by one migration. It is sent only while
-  # the live script has not applied it, as wrangler does: the provider sends
-  # `migrations` from the configuration on every update (provider 5.28.1,
-  # internal/services/workers_script/resource.go, Update), and the API rejects a
-  # migration whose old_tag is not the script's current tag (412, code 10079).
-  # Changing the classes means recreating the deployment; there is no upgrade
-  # path.
+  # The migration that creates the Durable Object classes is sent only while
+  # the live script lacks it, as wrangler does: the provider sends `migrations`
+  # on every update, and Cloudflare rejects one the script has already applied.
   migration_tag = "v1"
-  applied_tag = try(one([
+  applied_tag = one([
     for s in data.cloudflare_workers_scripts.account.result : s.migration_tag
     if s.id == var.script_name
-  ]), null)
-  migrations = local.applied_tag == local.migration_tag ? null : {
-    new_tag            = local.migration_tag
-    new_sqlite_classes = ["endpoint", "registry"]
-  }
+  ])
 }
 
 data "cloudflare_workers_scripts" "account" {
@@ -63,10 +49,12 @@ resource "cloudflare_workers_script" "iroh_do" {
     { type = "plain_text", name = "LOG_LEVEL", text = var.log_level },
   ]
 
-  migrations = local.migrations
+  migrations = local.applied_tag == local.migration_tag ? null : {
+    new_tag            = local.migration_tag
+    new_sqlite_classes = ["endpoint", "registry"]
+  }
 
-  # The API fills in any observability attribute left out, and the provider
-  # then reports it as drift, so every attribute is spelled out.
+  # Every attribute is set: the API fills in omitted ones, which then show as drift.
   observability = {
     enabled            = true
     head_sampling_rate = 1
@@ -84,8 +72,8 @@ resource "cloudflare_workers_script" "iroh_do" {
   }
 
   lifecycle {
-    # After the first apply the configuration stops sending the migration
-    # (above); without this, every later plan would show it being removed.
+    # Once applied, the migration is no longer sent (above); this keeps that
+    # from showing as a change.
     ignore_changes = [migrations]
   }
 }

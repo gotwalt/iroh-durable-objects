@@ -30,14 +30,14 @@ module "iroh_do" {
   account_id        = "…"
   zone_id           = "…"
   zone_name         = "example.com"
-  worker_bundle_dir = "${path.root}/build/worker"
+  worker_bundle_dir = "build/worker" # relative to the root module
   admin_token       = var.admin_token # >= 32 characters; authorizes POST /mint only
 }
 ```
 
 The other inputs and their defaults are in `variables.tf`; the outputs
-(`admin_url`, `endpoint_url_template`, `zone_suffix`, `script_name`,
-`bundle_sha256`) in `outputs.tf`. The root module should
+(`admin_url`, `endpoint_url_template`, `zone_suffix`, `script_name`) in
+`outputs.tf`. The root module should
 encrypt its state: the admin token is stored there
 (`examples/deployment/infra/encryption.tf`).
 

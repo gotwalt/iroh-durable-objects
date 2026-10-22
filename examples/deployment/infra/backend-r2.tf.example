@@ -1,8 +1,6 @@
-# Optional shared backend on Cloudflare R2 (S3-compatible). Copy to
-# examples/deployment/infra/backend.tf, create the bucket and an R2 access key, then:
+# Copy to backend.tf to keep state in R2, then:
 #   export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
 #   tofu init -migrate-state
-# State stays client-side encrypted (encryption.tf); R2 only ever sees ciphertext.
 terraform {
   backend "s3" {
     bucket = "iroh-do-tfstate"

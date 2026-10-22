@@ -1,13 +1,5 @@
-# Copy to examples/deployment/infra/<name>.auto.tfvars (gitignored) and fill in. Never commit real ids
-# alongside a token, and never put the API token or admin token here:
-#   - CLOUDFLARE_API_TOKEN comes from the environment,
-#   - admin_token comes from TF_VAR_admin_token (`just up` generates it),
-#   - state_passphrase comes from TF_VAR_state_passphrase (`just up` generates it).
-
+# Copy to <name>.auto.tfvars (gitignored). The admin token and state passphrase
+# come from TF_VAR_*, which the justfile sets from .demo/.
 account_id = "0123456789abcdef0123456789abcdef"
 zone_id    = "0123456789abcdef0123456789abcdef"
 zone_name  = "example.com"
-
-# Endpoints: https://<E>.iroh-do.example.com/   Admin: https://admin.iroh-do.example.com
-# The module's other inputs (deploy/tofu/variables.tf) keep their defaults; set
-# them in main.tf's module block to change them.
