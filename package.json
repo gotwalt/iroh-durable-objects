@@ -1,16 +1,30 @@
 {
   "name": "iroh-do-workspace",
   "private": true,
-  "description": "npm workspaces of the TypeScript host (design note 013): the iroh-do package and the apps built on it. One lockfile, here.",
+  "description": "npm workspaces of the TypeScript host (design note 013): the iroh-do package, its test helpers, and the apps built on it. One lockfile, here.",
+  "type": "module",
   "workspaces": [
     "packages/iroh-do",
+    "packages/iroh-do-testing",
     "examples/echo/server",
     "examples/chat/server",
     "examples/ts-deployment"
   ],
+  "engines": {
+    "node": ">=20.19"
+  },
+  "packageManager": "npm@11.17.0",
+  "scripts": {
+    "build": "npm run build -w iroh-do && npm run build -w iroh-do-testing",
+    "lint": "biome check",
+    "format": "biome format --write",
+    "check": "npm run check -w iroh-do -w iroh-do-testing -w iroh-do-echo-server -w iroh-do-ts-deployment"
+  },
   "devDependencies": {
-    "miniflare": "5.20260908.0-alpha",
+    "@biomejs/biome": "2.6.2",
+    "@cloudflare/vitest-plugin": "1.4.7",
     "typescript": "5.9.3",
+    "vitest": "4.1.12",
     "wrangler": "4.130.0"
   }
 }

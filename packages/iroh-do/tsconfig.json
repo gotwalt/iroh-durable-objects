@@ -1,15 +1,8 @@
 {
+  "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "target": "es2023",
-    "lib": ["es2023"],
-    "module": "es2022",
-    "moduleResolution": "bundler",
-    "types": ["./test/worker-configuration.d.ts"],
-    "strict": true,
     "noEmit": true,
-    "skipLibCheck": true,
-    "allowJs": false,
-    "isolatedModules": true
+    "types": ["@cloudflare/vitest-plugin/types"]
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "test/worker-configuration.d.ts"]
+  "include": ["src/**/*.ts", "test/unit/**/*.ts", "test/fixture/*.ts", "types/*.d.ts", "ambient/*.d.ts"]
 }
