@@ -12,16 +12,22 @@
 //! `RECORD_FIXTURES=1 cargo test -p iroh-do-chat-app --test fixtures` fills in the `expect`,
 //! `expect_raw` and `deliveries` of steps that have none, from what this server does, and
 //! writes the files back. Steps that already have an expectation are verified, never rewritten.
+//!
+//! `FIXTURE_TARGET=<port> FIXTURE_ADMIN_TOKEN=<token> cargo test -p iroh-do-chat-app --test
+//! fixtures` runs the same fixtures against another chat server: a `wrangler dev` of a
+//! deployment on `127.0.0.1:<port>` that answers `POST admin.localhost/mint` as the Rust router
+//! does. Each fixture mints its own endpoint there, with app `chat`.
 
 use std::{
     collections::HashMap,
+    io::{Read as _, Write as _},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
 
 use iroh::{
-    Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl,
+    Endpoint, EndpointAddr, EndpointId, RelayMap, RelayMode, RelayUrl,
     endpoint::{Connection, RecvStream, SendStream, presets},
 };
 use iroh_do_chat_app::{
@@ -406,7 +412,9 @@ fn templatize_value(v: &Value, key: &str, ids: &[(String, String)]) -> Value {
 // ---- running ----------------------------------------------------------------------------
 
 struct Run {
-    obj: Arc<DoObject>,
+    id: EndpointId,
+    /// Keeps a harness object alive; `None` for a remote server.
+    _obj: Option<Arc<DoObject>>,
     actors: Vec<(String, Arc<Actor>)>,
     binds: Binds,
     /// `(name, value)` for `peer:*`, `peer8:*` and `room`.
@@ -509,12 +517,76 @@ async fn echo_request(a: &Actor, bytes: &[u8]) -> Vec<u8> {
     reply
 }
 
-async fn run_fixture(h: Arc<Harness>, path: PathBuf) -> Result<(), String> {
+/// Where the fixtures run.
+#[derive(Clone)]
+enum Target {
+    Harness(Arc<Harness>),
+    /// A `wrangler dev` on `127.0.0.1:port`, minted with the admin token.
+    Remote { port: u16, token: String },
+}
+
+impl Target {
+    fn from_env() -> Option<Self> {
+        let port = std::env::var("FIXTURE_TARGET").ok()?;
+        let port = port.parse().expect("FIXTURE_TARGET is a port");
+        let token = std::env::var("FIXTURE_ADMIN_TOKEN").expect("FIXTURE_ADMIN_TOKEN");
+        Some(Target::Remote { port, token })
+    }
+
+    /// Mints a chat endpoint; returns its id, its relay URL and, for the harness, the object.
+    async fn mint(&self) -> Result<(EndpointId, RelayUrl, Option<Arc<DoObject>>), String> {
+        match self {
+            Target::Harness(h) => {
+                let obj = h.mint::<ChatApp>(Timings::default());
+                let url = h.relay_url(&obj.id()).parse().expect("relay url");
+                Ok((obj.id(), url, Some(obj)))
+            }
+            Target::Remote { port, token } => {
+                let (port, token) = (*port, token.clone());
+                let body = tokio::task::spawn_blocking(move || mint_remote(port, &token))
+                    .await
+                    .map_err(|e| e.to_string())??;
+                let v: Value = serde_json::from_str(&body).map_err(|e| format!("mint: {e}: {body}"))?;
+                let id = v["id"].as_str().ok_or_else(|| format!("mint: {body}"))?;
+                let id = EndpointId::from_z32(id).map_err(|e| e.to_string())?;
+                let url = v["relay_url"].as_str().ok_or("mint: relay_url")?;
+                Ok((id, url.parse().map_err(|e| format!("{e}"))?, None))
+            }
+        }
+    }
+}
+
+/// `POST /mint` on the admin host of a local `wrangler dev`; returns the JSON body.
+///
+/// Plain HTTP/1.1 over a socket keeps the test free of an HTTP client dependency. The body is a
+/// single JSON object, so a chunked response is reduced to the text between its outer braces.
+fn mint_remote(port: u16, token: &str) -> Result<String, String> {
+    let body = r#"{"app":"chat"}"#;
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).map_err(|e| e.to_string())?;
+    write!(
+        s,
+        "POST /mint HTTP/1.1\r\nHost: admin.localhost:{port}\r\nAuthorization: Bearer {token}\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .map_err(|e| e.to_string())?;
+    let mut out = String::new();
+    s.read_to_string(&mut out).map_err(|e| e.to_string())?;
+    let (head, rest) = out.split_once("\r\n\r\n").ok_or("mint: no response")?;
+    if !head.starts_with("HTTP/1.1 200") {
+        return Err(format!("mint: {}", head.lines().next().unwrap_or("")));
+    }
+    match (rest.find('{'), rest.rfind('}')) {
+        (Some(a), Some(b)) => Ok(rest[a..=b].to_string()),
+        _ => Err(format!("mint: body {rest}")),
+    }
+}
+
+async fn run_fixture(target: Target, path: PathBuf) -> Result<(), String> {
     let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     let mut fx: Value = serde_json::from_str(&text).map_err(|e| format!("parse: {e}"))?;
     let record = record_mode();
-    let obj = h.mint::<ChatApp>(Timings::default());
-    let url: RelayUrl = h.relay_url(&obj.id()).parse().expect("relay url");
+    let (id, url, obj) = target.mint().await?;
     let names: Vec<String> = fx["members"]
         .as_array()
         .ok_or("members")?
@@ -522,16 +594,17 @@ async fn run_fixture(h: Arc<Harness>, path: PathBuf) -> Result<(), String> {
         .map(|m| m.as_str().unwrap().to_string())
         .collect();
     let mut run = Run {
-        obj,
+        id,
+        _obj: obj,
         actors: Vec::new(),
         binds: Binds::new(),
         ids: Vec::new(),
     };
     run.binds
-        .insert("room".into(), run.obj.id().to_z32().into());
-    run.ids.push(("room".into(), run.obj.id().to_z32()));
+        .insert("room".into(), run.id.to_z32().into());
+    run.ids.push(("room".into(), run.id.to_z32()));
     for n in &names {
-        let a = Actor::new(&url, run.obj.id()).await;
+        let a = Actor::new(&url, run.id).await;
         let z = a.ep.id().to_z32();
         run.binds.insert(format!("peer:{n}"), z.clone().into());
         run.binds
@@ -690,7 +763,13 @@ fn raw_template(raw: &[u8]) -> Value {
 /// The fixtures, each on a new object, in file name order.
 #[tokio::test(flavor = "multi_thread")]
 async fn fixtures() {
-    let h = Arc::new(Harness::start().await.unwrap());
+    let target = match Target::from_env() {
+        Some(t) => {
+            assert!(!record_mode(), "fixtures are recorded from the Rust app only");
+            t
+        }
+        None => Target::Harness(Arc::new(Harness::start().await.unwrap())),
+    };
     let mut files: Vec<_> = std::fs::read_dir(fixture_dir())
         .expect("fixtures directory")
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -702,7 +781,7 @@ async fn fixtures() {
     let mut tasks = Vec::new();
     for f in files {
         let name = f.file_name().unwrap().to_string_lossy().into_owned();
-        tasks.push((name, tokio::spawn(run_fixture(h.clone(), f))));
+        tasks.push((name, tokio::spawn(run_fixture(target.clone(), f))));
     }
     let mut failures = Vec::new();
     for (name, t) in tasks {

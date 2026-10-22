@@ -62,6 +62,11 @@ that reviews refer to; `docs/design-notes/` records every change to it.
       (port `LOCAL_PORT`, default 8799), mint with `{"app":"chat"}`, then
       `cargo run -p iroh-do-chat -- --local --local-port 8799 lifecycle <E>
       --room`.
+    - The chat golden fixtures (`examples/chat/common/fixtures/`) against the
+      TypeScript chat app: with that `wrangler dev` running with `--var
+      ADMIN_TOKEN:<token>`, `FIXTURE_TARGET=8799 FIXTURE_ADMIN_TOKEN=<token>
+      cargo test -p iroh-do-chat-app --test fixtures fixtures`. Without the
+      variables the same test runs them against the Rust app.
     - The test peers must be found at `target/debug`; with a different
       `CARGO_TARGET_DIR`, set `IROH_DO_DEMO` and `IROH_DO_ECHO` for
       `tests/workerd/evict-test.mjs`.

@@ -572,6 +572,23 @@ Expected first `just plan` after step 2:
 - After that apply, a second plan shows `iroh_ts`'s `migrations` going to null. One more
   apply clears it.
 
+## Step 2: golden fixtures against the TypeScript chat app
+
+The fixtures in `examples/chat/common/fixtures/` were recorded from the Rust chat
+app. `FIXTURE_TARGET=8811 FIXTURE_ADMIN_TOKEN=<token> cargo test -p
+iroh-do-chat-app --test fixtures fixtures` replayed all 12 of them (about 140
+steps) against `examples/ts-deployment` under `wrangler dev` on port 8811, with
+one stock iroh endpoint per member, and passed:
+
+```
+test result: ok. 1 passed; 0 failed; ... finished in 23.25s
+```
+
+The `wrangler dev` log for the run shows 12 mints, 130 `room_request`, 56
+`room_delivery` and 172 `conn_open`/`conn_close` events, so the run reached the
+TypeScript server, not the native harness. Without the two variables the same
+test runs against the Rust app, where it also passes.
+
 ## Reproduce
 
 ```sh
