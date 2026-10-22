@@ -3,6 +3,9 @@
   "private": true,
   "type": "module",
   "description": "The echo app as a TypeScript Durable Object on iroh-do",
+  "exports": {
+    ".": "./src/echo.ts"
+  },
   "dependencies": {
     "iroh-do": "0.1.0"
   },
