@@ -6,14 +6,15 @@
 // holds `E` (design note 013, "Consequences"). Ported from `crates/iroh-do/src/registry.rs`
 // and `glue/registry.rs`, with the same table.
 import { DurableObject } from "cloudflare:workers";
-import { log } from "./log";
-import { EndpointId, instance } from "./wasm";
+import { stringVar } from "./env.js";
+import { log } from "./log.js";
+import { GlueEndpointId, instance } from "./wasm.js";
 
 /** Name of the one registry object. Not valid z-base-32, so it cannot be an EndpointId. */
 export const REGISTRY_NAME = "registry";
-/** Longest label, in characters. */
+/** Longest label and app name, in characters. */
 export const MAX_LABEL = 64;
-/** Most endpoints the list returns, newest first. */
+/** Most endpoints one page of the list holds, newest first. */
 export const LIST_LIMIT = 500;
 
 const SCHEMA = [
@@ -29,9 +30,9 @@ const REGISTER = `INSERT INTO endpoints(id, app, label, minted_at) VALUES (?, ?,
  ON CONFLICT(id) DO NOTHING`;
 const UNREGISTER = "DELETE FROM endpoints WHERE id = ?";
 const LOOKUP = "SELECT app FROM endpoints WHERE id = ?";
-const LIST = "SELECT id, app, label, minted_at FROM endpoints ORDER BY minted_at DESC LIMIT ?";
+const LIST = "SELECT id, app, label, minted_at FROM endpoints WHERE minted_at < ? ORDER BY minted_at DESC LIMIT ?";
 
-/** One registered endpoint, as stored and as `/endpoints.json` returns it. */
+/** One registered endpoint. `/endpoints.json` writes `mintedAt` as `minted_at`. */
 export interface RegistryEntry {
   /** EndpointId, z-base-32. */
   id: string;
@@ -40,38 +41,59 @@ export interface RegistryEntry {
   /** Label given at mint; empty if none. */
   label: string;
   /** Mint time in milliseconds since the UNIX epoch. */
-  minted_at: number;
+  mintedAt: number;
 }
 
-function isEndpointId(id: string): boolean {
-  if (id.length !== 52) return false;
+/** One page of the list (`IrohRegistry.list`). */
+export interface RegistryPage {
+  entries: RegistryEntry[];
+  /** Pass as `before` for the next, older page; null on the last page. */
+  next: number | null;
+}
+
+/** Whether `id` is a valid EndpointId in z-base-32. */
+export function isEndpointId(id: unknown): id is string {
+  if (typeof id !== "string" || id.length !== 52) return false;
   try {
     // PublicKey::from_z32, never FromStr (design note 004).
-    EndpointId.fromZ32(id);
+    GlueEndpointId.fromZ32(id).free();
     return true;
   } catch {
     return false;
   }
 }
 
+/** Why `label` is not acceptable, or null. Rust's `char::is_control` is the Cc category. */
+export function labelError(label: string): string | null {
+  if ([...label].length > MAX_LABEL) return `label longer than ${MAX_LABEL} characters`;
+  if (/\p{Cc}/u.test(label)) return "label contains control characters";
+  return null;
+}
+
 /**
  * The registry object. One instance, named `registry`, bound as `REGISTRY` by convention. The
  * router calls it over Workers RPC.
  */
-export class IrohRegistry extends DurableObject {
-  /** `lookup` calls since this construction, for tests of the router's cache. */
-  #lookups = 0;
-
-  constructor(ctx: DurableObjectState, env: unknown) {
-    super(ctx, env as never);
-    instance((env as Record<string, unknown>).LOG_LEVEL as string | undefined);
+export class IrohRegistry<Env = unknown> extends DurableObject<Env> {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    instance(stringVar(env, "LOG_LEVEL"));
     for (const s of SCHEMA) ctx.storage.sql.exec(s);
   }
 
-  /** Records `e`. Returns false, and writes nothing, if `e` is malformed. */
+  /** Records `e`. Returns false, and writes nothing, if any field is malformed. */
   async register(e: RegistryEntry): Promise<boolean> {
-    if (!isEndpointId(e.id) || typeof e.app !== "string" || [...e.label].length > MAX_LABEL) return false;
-    this.ctx.storage.sql.exec(REGISTER, e.id, e.app, e.label, e.minted_at);
+    const ok =
+      isEndpointId(e.id) &&
+      typeof e.app === "string" &&
+      e.app !== "" &&
+      [...e.app].length <= MAX_LABEL &&
+      typeof e.label === "string" &&
+      labelError(e.label) === null &&
+      Number.isSafeInteger(e.mintedAt) &&
+      e.mintedAt >= 0;
+    if (!ok) return false;
+    this.ctx.storage.sql.exec(REGISTER, e.id, e.app, e.label, e.mintedAt);
     log("info", "registry_entry", { endpoint: e.id, app: e.app });
     return true;
   }
@@ -86,23 +108,25 @@ export class IrohRegistry extends DurableObject {
 
   /** The app `id` was minted with, or null if it is not registered. */
   async lookup(id: string): Promise<string | null> {
-    this.#lookups++;
-    return (this.ctx.storage.sql.exec(LOOKUP, id).toArray()[0]?.app as string | undefined) ?? null;
+    const app: unknown = this.ctx.storage.sql.exec(LOOKUP, id).toArray()[0]?.app;
+    return typeof app === "string" ? app : null;
   }
 
-  /** The newest registered endpoints, at most `LIST_LIMIT`. */
-  async list(): Promise<RegistryEntry[]> {
-    return this.ctx.storage.sql.exec(LIST, LIST_LIMIT).toArray().map((r) => ({
-      id: r.id as string,
-      app: r.app as string,
-      label: r.label as string,
-      minted_at: r.minted_at as number,
-    }));
-  }
-
-  /** `lookup` calls since this construction. */
-  async lookups(): Promise<number> {
-    return this.#lookups;
+  /**
+   * The registered endpoints minted before `before` (default: all), newest first, at most
+   * `limit` (default and maximum `LIST_LIMIT`).
+   */
+  async list(opts: { before?: number; limit?: number } = {}): Promise<RegistryPage> {
+    const limit = Math.max(1, Math.min(LIST_LIMIT, Math.floor(opts.limit ?? LIST_LIMIT)));
+    const before = opts.before ?? Number.MAX_SAFE_INTEGER;
+    const rows = this.ctx.storage.sql.exec(LIST, before, limit + 1).toArray();
+    const entries: RegistryEntry[] = [];
+    for (const r of rows.slice(0, limit)) {
+      if (typeof r.id !== "string" || typeof r.app !== "string" || typeof r.label !== "string") continue;
+      entries.push({ id: r.id, app: r.app, label: r.label, mintedAt: Number(r.minted_at) });
+    }
+    const last = entries[entries.length - 1];
+    return { entries, next: rows.length > limit && last ? last.mintedAt : null };
   }
 }
 
@@ -113,25 +137,27 @@ export function mintBody(body: string): { app: string | null; label: string } | 
   try {
     b = JSON.parse(body);
   } catch (e) {
-    return { error: `body must be JSON {"app":…, "label":…}: ${(e as Error).message}` };
+    return { error: `body must be JSON {"app":…, "label":…}: ${e instanceof Error ? e.message : String(e)}` };
   }
   if (typeof b !== "object" || b === null || Array.isArray(b)) {
     return { error: 'body must be JSON {"app":…, "label":…}: not an object' };
   }
-  const { app, label } = b as { app?: unknown; label?: unknown };
-  if ((app !== undefined && app !== null && typeof app !== "string") || (label !== undefined && label !== null && typeof label !== "string")) {
+  const app: unknown = Reflect.get(b, "app");
+  const label: unknown = Reflect.get(b, "label");
+  if ((app != null && typeof app !== "string") || (label != null && typeof label !== "string")) {
     return { error: 'body must be JSON {"app":…, "label":…}: app and label must be strings' };
   }
-  const l = ((label as string | null | undefined) ?? "").trim();
-  if ([...l].length > MAX_LABEL) return { error: `label longer than ${MAX_LABEL} characters` };
-  // Rust's char::is_control: the Unicode Cc category.
-  if (/[\u0000-\u001f\u007f-\u009f]/.test(l)) return { error: "label contains control characters" };
-  return { app: (app as string | null | undefined) ?? null, label: l };
+  const l = (label ?? "").trim();
+  const err = labelError(l);
+  if (err) return { error: err };
+  return { app: app ?? null, label: l };
 }
+
+const ESCAPES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 
 /** Escapes text for HTML element content and quoted attribute values. */
 export function htmlEscape(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+  return s.replace(/[&<>"']/g, (c) => ESCAPES[c] ?? c);
 }
 
 /** Formats milliseconds since the UNIX epoch as `YYYY-MM-DD HH:MM UTC`. */
@@ -141,8 +167,15 @@ export function utc(ms: number): string {
   return `${p(d.getUTCFullYear(), 4)}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())} UTC`;
 }
 
-/** Renders the list page. `joinHint(app, id)` is the command shown for an endpoint. */
-export function listPage(entries: RegistryEntry[], joinHint: (app: string, id: string) => string): string {
+/**
+ * Renders one page of the list. `joinHint(app, id)` is the command shown for an endpoint;
+ * `nextHref` links the next, older page.
+ */
+export function listPage(
+  entries: RegistryEntry[],
+  joinHint: (app: string, id: string) => string,
+  nextHref: string | null = null,
+): string {
   let out = PAGE_HEAD;
   if (entries.length === 0) {
     out += "<p>No endpoints yet.</p>\n";
@@ -153,12 +186,14 @@ export function listPage(entries: RegistryEntry[], joinHint: (app: string, id: s
       const label = e.label === "" ? "<span class=dim>none</span>" : htmlEscape(e.label);
       const app = htmlEscape(e.app);
       const hint = htmlEscape(joinHint(e.app, e.id));
-      out += `<tr><td>${label}</td><td>${app}</td><td><code>${id}</code> <button data-copy="${id}">copy</button></td>`
-        + `<td>${utc(e.minted_at)}</td><td><code>${hint}</code></td>`
-        + `<td><button data-status="${id}">show</button> <span class=status></span></td></tr>\n`;
+      out +=
+        `<tr><td>${label}</td><td>${app}</td><td><code>${id}</code> <button data-copy="${id}">copy</button></td>` +
+        `<td>${utc(e.mintedAt)}</td><td><code>${hint}</code></td>` +
+        `<td><button data-status="${id}">show</button> <span class=status></span></td></tr>\n`;
     }
     out += "</table>\n";
   }
+  if (nextHref !== null) out += `<p><a href="${htmlEscape(nextHref)}">Older endpoints</a></p>\n`;
   return out + PAGE_TAIL;
 }
 
