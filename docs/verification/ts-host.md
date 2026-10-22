@@ -16,6 +16,9 @@ Two rounds of verification of design note 013, both on 2026-10-22, with wrangler
   Not yet deployed to production. The chat class was later rewritten against
   `examples/chat/common/PROTOCOL.md` (Vitest 5.0.3, Biome 2.5.15); the step 2 sections
   give the results for both versions where they were measured.
+- **Review fixes** (section "Review fixes: the package and the wasm library"): the
+  problems a review of step 2 found in the package and the wasm library, their fixes and
+  regression tests, and the suites as they are now.
 
 Paths in the spike sections are the spike's.
 
@@ -652,36 +655,73 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; fini
 That run logged 13 mints, 140 `room_request`, 57 `room_delivery` and 184 each of
 `conn_open` and `conn_close`.
 
+## Review fixes: the package and the wasm library (2026-10-22)
+
+A review of step 2 found the problems listed in this section; the fixes are in
+`packages/iroh-do`, `packages/iroh-do-testing`, `crates/iroh-do-wasm`, `iroh-do-core`,
+the test peer and the fixture runner. The step 1 and step 2 sections above name the test
+scripts of their time: `*-test.mjs` files that printed PASS lines. They are now Vitest
+suites (below); the checks they made are kept.
+
+| Finding | Change | Regression test |
+|---|---|---|
+| Alarm rows deleted before their work ran; a trap lost the row and left due rows without an alarm | Rows are deleted after their work; failures and traps move the row on (30 s doubling to 1 h); the alarm is re-armed in a `finally` | `test/unit/object.test.ts`, "A-B1" |
+| After another object's trap, `this.endpoint` in an app's RPC method returned stale wasm objects | Every entry point, the getter included, checks the wasm generation; `nodeSignal` aborts on reset and destroy; `withNode()` | `test/unit/object.test.ts`, "A-B2" |
+| Identity stored before the node build; a failed build left a silent 404 | Identity, counters, `protocols()`, the node and `onMinted()` in one transaction | `test/unit/object.test.ts`, "A-M1" |
+| Node state per EndpointId, callbacks held strongly: dropped objects leaked, a stale node reached a newer node's sockets | State per `WasmNode`, callbacks through a `WeakRef`, removed on `Drop` | `test/node/host.test.ts` |
+| A stream half released only on a clean end: a peer's reset kept the connection to `t_silent` | Released on every terminal outcome | `test/e2e/lifetime.test.ts`, "B-M2" |
+| `stop`/`reset` waited behind a pending read or write | Stream borrowed only inside a poll; `stop`/`reset` wake and fail the pending call | — (the reset and stop paths of the B-M2 tests run through it) |
+| Host bind callbacks ran under the node's lock | Called after the lock is dropped | `crates/iroh-do-harness/tests/library.rs`, `bind_callbacks_may_reenter_the_node` |
+
+The router caches unregistered ids for 60 s, answers 503 when a binding or an RPC fails,
+and serves the host's status fields only with the token. The package builds to `dist/`;
+the test peer uses `presets::Minimal` with the object as its only relay.
+
+### Results
+
+All on the maintainer's machine (macOS, Apple silicon), 2026-10-22, with wrangler 4.130.0,
+Vitest 5.0.3, `@cloudflare/vitest-plugin` 1.4.7, Biome 2.5.15.
+
+| Suite | Result | Wall time |
+|---|---|---|
+| `cargo test -p iroh-relay-ingress -p iroh-do-harness -p iroh-do-chat-app -p iroh-do-chat -p iroh-do-core` | all pass, exit 0 | — |
+| `packages/iroh-do`, `npm run test:unit` (workerd and Node) | 29 passed | — |
+| `packages/iroh-do`, `npm run test:e2e` | 13 passed | 47 s |
+| `examples/echo/server`, `npm test` | 2 unit and 11 e2e passed | 19 s (e2e) |
+| `examples/ts-deployment`, `npm test` | 10 passed, 1 expected failure | 47 s |
+| `iroh-do-chat -- --local lifecycle <E> --room` under `wrangler dev` of `examples/ts-deployment` | `result: PASS`, 34 rows | 80 s |
+| `FIXTURE_TARGET=<port> … cargo test -p iroh-do-chat-app --test fixtures fixtures` against the same | 1 passed | 24 s |
+| stock `iroh-do-echo-client <E> hello --local <port>` against the same | `connected in 34 ms, echoed 5 bytes in 48 ms` | — |
+
+The expected failure is connection reuse in the chat room: the chat server tests
+`closeReason() === undefined`, and the package now returns null, as `@number0/iroh` does,
+so the room never sees a dialed connection as open and dials again. The test is marked
+`it.fails` until the chat server changes the comparison.
+
+The wasm module built by `build-wasm.sh` for these runs: 4,494,314 B raw, 1,485,164 B with
+`gzip -9`.
+
 ## Reproduce
 
 ```sh
 export CARGO_TARGET_DIR=<repo>/target
 npm ci                                   # repository root
-cargo build -p iroh-do-test-peer
+npm run build                            # iroh-do (wasm and tsc) and iroh-do-testing
+cargo build -p iroh-do-test-peer -p iroh-do-chat -p iroh-do-echo-client
+npm run check && npm run lint            # tsc in every package (strict), Biome
 
-cd packages/iroh-do
-npm run check                            # wrangler types + tsc --noEmit (strict)
-npm test                                 # test bundle with test-panic, lifetime and panic tests
+npm run test:unit -w iroh-do             # workerd and Node unit tests
+npm run test:e2e -w iroh-do              # test-panic build into pkg-test/, fixture, e2e
+npm test -w iroh-do-echo-server          # unit; bundle; admin and eviction e2e
+npm test -w iroh-do-ts-deployment        # bundle; router and room e2e
+npm test -w iroh-do-chat-server          # the chat server's own unit tests
 
-cd ../../examples/echo/server
-npm run check
-npm run build                            # dist/ and dist/manifest.json, no wasm features
-npm test                                 # admin-test.mjs, evict-test.mjs (about 75 s)
-
-# End to end with the stock client:
+# End to end with the stock clients:
+cd examples/ts-deployment
 npx wrangler dev --local --ip 127.0.0.1 --port 8799 --var ADMIN_TOKEN:local
-curl -s --resolve admin.localhost:8799:127.0.0.1 -X POST -H "Authorization: Bearer local" http://admin.localhost:8799/mint
+curl -s --resolve admin.localhost:8799:127.0.0.1 -X POST -H "Authorization: Bearer local" \
+  -H 'Content-Type: application/json' --data-binary '{"app":"echo"}' http://admin.localhost:8799/mint
 cargo run -p iroh-do-echo-client -- <E> hello --local 8799
-
-# Step 2: the deployment with both apps.
-cargo build -p iroh-do-chat -p iroh-do-test-peer
-cd ../../chat/server                     # examples/chat/server
-npm run check && npm run lint && npm test   # tsc (strict), Biome, Vitest unit tests
-cd ../../ts-deployment                   # examples/ts-deployment
-npm run check
-npm run build                            # or, from the root: just build-ts
-npm test                                 # router-test.mjs, then room.test.mjs under Vitest (about 70 s)
-npx wrangler dev --local --ip 127.0.0.1 --port 8799 --var ADMIN_TOKEN:local
 curl -s --resolve admin.localhost:8799:127.0.0.1 -X POST -H "Authorization: Bearer local" \
   -H 'Content-Type: application/json' --data-binary '{"app":"chat"}' http://admin.localhost:8799/mint
 cargo run -p iroh-do-chat -- --local --local-port 8799 lifecycle <E> --room
@@ -689,5 +729,5 @@ cargo run -p iroh-do-chat -- --local --local-port 8799 lifecycle <E> --room
 FIXTURE_TARGET=8799 FIXTURE_ADMIN_TOKEN=local cargo test -p iroh-do-chat-app --test fixtures fixtures
 ```
 
-`npm test` in `packages/iroh-do` leaves `pkg/` built with `test-panic`; `npm run build` in
-the app rebuilds it without features before bundling.
+The package's tests never touch `pkg/`: the panic tests use the `test-panic` build in
+`pkg-test/`.

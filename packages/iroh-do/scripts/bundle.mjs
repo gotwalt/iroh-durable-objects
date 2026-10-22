@@ -95,7 +95,9 @@ const types = {
   ".mjs": "application/javascript+module",
   ".wasm": "application/wasm",
 };
-const others = entries.filter((f) => f !== MAIN && !f.endsWith(".map") && f !== "README.md" && f !== "bundle-meta.json").sort();
+const others = entries
+  .filter((f) => f !== MAIN && !f.endsWith(".map") && f !== "README.md" && f !== "bundle-meta.json")
+  .sort();
 const modules = [MAIN, ...others].map((f) => {
   const content_type = types[f.slice(f.lastIndexOf("."))];
   if (!content_type) fail(`unexpected file in the bundle: ${f}`);
