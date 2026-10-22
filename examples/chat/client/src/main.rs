@@ -21,6 +21,8 @@
 
 mod client;
 mod ctl;
+#[cfg(test)]
+mod fixtures_check;
 mod lifecycle;
 mod net;
 mod room;
