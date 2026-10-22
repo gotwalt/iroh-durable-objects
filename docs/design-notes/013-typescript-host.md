@@ -170,9 +170,11 @@ connection is dropped rather than left stalled.
 
 ## Consequences
 
-- **Removed:** `crates/iroh-do` (`glue/`, the `worker!` macro, router), the
-  `App` trait and `AppEntry` of 011, `examples/deployment` as a Rust crate,
-  worker-build and `deploy/build-worker.sh`.
+- **Planned for step 3, not done:** removing `crates/iroh-do` (`glue/`, the
+  `worker!` macro, router), the `App` trait and `AppEntry` of 011,
+  `examples/deployment` as a Rust crate, worker-build and
+  `deploy/build-worker.sh`. After step 2 all of these still exist, and the Rust
+  deployment `module.iroh_do` still runs from them.
 - **An app is chosen per deployment, not per endpoint** (011, decision 2): each
   app is a DO class, and its Worker binds that class. One deployment can still
   export several classes. The router then needs `E → class`, which mint

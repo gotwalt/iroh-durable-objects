@@ -1,4 +1,4 @@
-# The TypeScript host: spike and step 1 (design note 013)
+# The TypeScript host: spike, step 1 and step 2 (design note 013)
 
 Two rounds of verification of design note 013, both on 2026-10-22, with wrangler
 4.130.0, Miniflare 5.20260908.0-alpha (the version wrangler bundles), wasm-bindgen
