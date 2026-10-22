@@ -1,0 +1,91 @@
+{
+  "name": "rate-limit",
+  "description": "At most 10 requests per 10 s per member. Excess requests get an error, whatever they ask. The limit is per member, and a window that has passed admits requests again.",
+  "members": [
+    "ana",
+    "bo"
+  ],
+  "steps": [
+    {
+      "member": "ana",
+      "note": "the first 10 requests in the window are handled (and refused as not joined)",
+      "times": 10,
+      "send": "/who\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "not joined: send /join [nick] first"
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "the 11th",
+      "send": "/who\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "rate limit: at most 10 requests per 10s"
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "a request that would succeed is refused as well",
+      "send": "/join ana\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "rate limit: at most 10 requests per 10s"
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "note": "another member is not affected",
+      "send": "/who\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "not joined: send /join [nick] first"
+        }
+      ]
+    },
+    {
+      "sleep_ms": 10500,
+      "note": "the window passes"
+    },
+    {
+      "member": "ana",
+      "send": "/join ana\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "nick": "ana"
+          },
+          "last_seq": 1
+        }
+      ]
+    }
+  ]
+}

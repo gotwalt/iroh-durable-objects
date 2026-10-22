@@ -1,0 +1,252 @@
+{
+  "name": "nick-fallback",
+  "description": "A member that left and finds its old nick taken gets the first 8 characters of its id on /join.",
+  "members": [
+    "ana",
+    "bo"
+  ],
+  "steps": [
+    {
+      "member": "ana",
+      "send": "/join ana\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "nick": "ana"
+          },
+          "last_seq": 1
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "send": "/join bo\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 2,
+          "prev": 1,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": "bo",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo"
+          },
+          "last_seq": 2
+        }
+      ],
+      "deliveries": {
+        "ana": [
+          {
+            "t": "join",
+            "seq": 2,
+            "prev": 1,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo"
+          }
+        ]
+      }
+    },
+    {
+      "member": "bo",
+      "send": "/quit\n",
+      "expect": [
+        {
+          "t": "ok",
+          "seq": 3,
+          "prev": 2
+        }
+      ],
+      "deliveries": {
+        "ana": [
+          {
+            "t": "part",
+            "seq": 3,
+            "prev": 2,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo",
+            "reason": ""
+          }
+        ]
+      }
+    },
+    {
+      "member": "ana",
+      "note": "takes bo's nick",
+      "send": "/nick bo\n",
+      "expect": [
+        {
+          "t": "ok",
+          "seq": 4,
+          "prev": 3
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "note": "previous nick taken: falls back to the id prefix",
+      "send": "/join\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 2,
+          "prev": 1,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": "bo",
+          "hist": true
+        },
+        {
+          "t": "part",
+          "seq": 3,
+          "prev": 2,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": "bo",
+          "reason": "",
+          "hist": true
+        },
+        {
+          "t": "nick",
+          "seq": 4,
+          "prev": 3,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "old": "ana",
+          "new": "bo",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 5,
+          "prev": 4,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": {
+            "$ref": "peer8:bo"
+          },
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": {
+              "$ref": "peer8:bo"
+            }
+          },
+          "last_seq": 5
+        }
+      ],
+      "deliveries": {
+        "ana": [
+          {
+            "t": "join",
+            "seq": 5,
+            "prev": 4,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": {
+              "$ref": "peer8:bo"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

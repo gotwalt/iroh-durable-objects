@@ -1,0 +1,657 @@
+{
+  "name": "join-rules",
+  "description": "/join with and without a nick, from a member that is not joined and from one that is: defaults, renames through /join, taken and invalid nicks.",
+  "members": [
+    "ana",
+    "bo",
+    "cy",
+    "dee"
+  ],
+  "steps": [
+    {
+      "member": "ana",
+      "send": "/join ana\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "nick": "ana"
+          },
+          "last_seq": 1
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "already joined, no argument: history and ready, no new event",
+      "send": "/join\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "nick": "ana"
+          },
+          "last_seq": 1
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "already joined with the same nick: the same",
+      "send": "/join ana\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "nick": "ana"
+          },
+          "last_seq": 1
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "a different nick renames, as /nick does",
+      "send": "/join ANA\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "nick",
+          "seq": 2,
+          "prev": 1,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "old": "ana",
+          "new": "ANA",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "nick": "ANA"
+          },
+          "last_seq": 2
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "send": "/join anna\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "nick",
+          "seq": 2,
+          "prev": 1,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "old": "ana",
+          "new": "ANA",
+          "hist": true
+        },
+        {
+          "t": "nick",
+          "seq": 3,
+          "prev": 2,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "old": "ANA",
+          "new": "anna",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "nick": "anna"
+          },
+          "last_seq": 3
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "send": "/join bad!\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "invalid nick: 1-24 characters of A-Z a-z 0-9 _ . -"
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "note": "taken, ignoring case",
+      "send": "/join ANNA\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "nick ANNA is taken"
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "note": "a new member without a nick gets the first 8 characters of its id",
+      "send": "/join\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "nick",
+          "seq": 2,
+          "prev": 1,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "old": "ana",
+          "new": "ANA",
+          "hist": true
+        },
+        {
+          "t": "nick",
+          "seq": 3,
+          "prev": 2,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "old": "ANA",
+          "new": "anna",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 4,
+          "prev": 3,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": {
+            "$ref": "peer8:bo"
+          },
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": {
+              "$ref": "peer8:bo"
+            }
+          },
+          "last_seq": 4
+        }
+      ],
+      "deliveries": {
+        "ana": [
+          {
+            "t": "join",
+            "seq": 4,
+            "prev": 3,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": {
+              "$ref": "peer8:bo"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "member": "bo",
+      "send": "/join bad!\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "invalid nick: 1-24 characters of A-Z a-z 0-9 _ . -"
+        }
+      ]
+    },
+    {
+      "member": "cy",
+      "note": "the argument is trimmed",
+      "send": "/join  spaced \n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "nick",
+          "seq": 2,
+          "prev": 1,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "old": "ana",
+          "new": "ANA",
+          "hist": true
+        },
+        {
+          "t": "nick",
+          "seq": 3,
+          "prev": 2,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "old": "ANA",
+          "new": "anna",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 4,
+          "prev": 3,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": {
+            "$ref": "peer8:bo"
+          },
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 5,
+          "prev": 4,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:cy"
+          },
+          "nick": "spaced",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:cy"
+            },
+            "nick": "spaced"
+          },
+          "last_seq": 5
+        }
+      ],
+      "deliveries": {
+        "ana": [
+          {
+            "t": "join",
+            "seq": 5,
+            "prev": 4,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:cy"
+            },
+            "nick": "spaced"
+          }
+        ],
+        "bo": [
+          {
+            "t": "join",
+            "seq": 5,
+            "prev": 4,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:cy"
+            },
+            "nick": "spaced"
+          }
+        ]
+      }
+    },
+    {
+      "member": "cy",
+      "send": "/join a b\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "invalid nick: 1-24 characters of A-Z a-z 0-9 _ . -"
+        }
+      ]
+    },
+    {
+      "member": "dee",
+      "note": "not joined: invalid",
+      "send": "/join a b\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "invalid nick: 1-24 characters of A-Z a-z 0-9 _ . -"
+        }
+      ]
+    },
+    {
+      "member": "dee",
+      "send": [
+        "/join ",
+        {
+          "$repeat": [
+            "d",
+            25
+          ]
+        },
+        "\n"
+      ],
+      "expect": [
+        {
+          "t": "err",
+          "text": "invalid nick: 1-24 characters of A-Z a-z 0-9 _ . -"
+        }
+      ]
+    },
+    {
+      "member": "dee",
+      "send": [
+        "/join ",
+        {
+          "$repeat": [
+            "d",
+            24
+          ]
+        },
+        "\n"
+      ],
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "nick",
+          "seq": 2,
+          "prev": 1,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "old": "ana",
+          "new": "ANA",
+          "hist": true
+        },
+        {
+          "t": "nick",
+          "seq": 3,
+          "prev": 2,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "old": "ANA",
+          "new": "anna",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 4,
+          "prev": 3,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": {
+            "$ref": "peer8:bo"
+          },
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 5,
+          "prev": 4,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:cy"
+          },
+          "nick": "spaced",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 6,
+          "prev": 5,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:dee"
+          },
+          "nick": "dddddddddddddddddddddddd",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:dee"
+            },
+            "nick": "dddddddddddddddddddddddd"
+          },
+          "last_seq": 6
+        }
+      ],
+      "deliveries": {
+        "ana": [
+          {
+            "t": "join",
+            "seq": 6,
+            "prev": 5,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:dee"
+            },
+            "nick": "dddddddddddddddddddddddd"
+          }
+        ],
+        "bo": [
+          {
+            "t": "join",
+            "seq": 6,
+            "prev": 5,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:dee"
+            },
+            "nick": "dddddddddddddddddddddddd"
+          }
+        ],
+        "cy": [
+          {
+            "t": "join",
+            "seq": 6,
+            "prev": 5,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:dee"
+            },
+            "nick": "dddddddddddddddddddddddd"
+          }
+        ]
+      }
+    }
+  ]
+}

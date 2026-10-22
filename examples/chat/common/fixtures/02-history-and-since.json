@@ -1,0 +1,646 @@
+{
+  "name": "history-and-since",
+  "description": "/history returns the newest n room events oldest first, /since the events after a seq. Both mark events hist:true. Bad arguments get a usage error.",
+  "members": [
+    "ana",
+    "bo",
+    "cy"
+  ],
+  "steps": [
+    {
+      "member": "ana",
+      "send": "/join ana\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "nick": "ana"
+          },
+          "last_seq": 1
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "send": "/say one\n",
+      "expect": [
+        {
+          "t": "ok",
+          "seq": 2,
+          "prev": 1
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "captures the seq of the second message",
+      "expect": [
+        {
+          "t": "ok",
+          "seq": {
+            "$capture": "two",
+            "as": "int"
+          },
+          "prev": 2
+        }
+      ],
+      "send": "/say two\n"
+    },
+    {
+      "member": "ana",
+      "send": "/say three\n",
+      "expect": [
+        {
+          "t": "ok",
+          "seq": 4,
+          "prev": 3
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "note": "join reply: the newest 50 events (all of them here), then ready",
+      "send": "/join bo\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "msg",
+          "seq": 2,
+          "prev": 1,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": "one",
+          "hist": true
+        },
+        {
+          "t": "msg",
+          "seq": 3,
+          "prev": 2,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": "two",
+          "hist": true
+        },
+        {
+          "t": "msg",
+          "seq": 4,
+          "prev": 3,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": "three",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 5,
+          "prev": 4,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": "bo",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo"
+          },
+          "last_seq": 5
+        }
+      ],
+      "deliveries": {
+        "ana": [
+          {
+            "t": "join",
+            "seq": 5,
+            "prev": 4,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo"
+          }
+        ]
+      }
+    },
+    {
+      "member": "bo",
+      "note": "default 50",
+      "send": "/history\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "msg",
+          "seq": 2,
+          "prev": 1,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": "one",
+          "hist": true
+        },
+        {
+          "t": "msg",
+          "seq": 3,
+          "prev": 2,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": "two",
+          "hist": true
+        },
+        {
+          "t": "msg",
+          "seq": 4,
+          "prev": 3,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": "three",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 5,
+          "prev": 4,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": "bo",
+          "hist": true
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "send": "/history 2\n",
+      "expect": [
+        {
+          "t": "msg",
+          "seq": 4,
+          "prev": 3,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": "three",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 5,
+          "prev": 4,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": "bo",
+          "hist": true
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "send": "/history 1\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 5,
+          "prev": 4,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": "bo",
+          "hist": true
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "note": "n = 0 gives an empty reply",
+      "send": "/history 0\n",
+      "expect": []
+    },
+    {
+      "member": "bo",
+      "note": "everything after seq 0",
+      "send": "/since 0\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "msg",
+          "seq": 2,
+          "prev": 1,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": "one",
+          "hist": true
+        },
+        {
+          "t": "msg",
+          "seq": 3,
+          "prev": 2,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": "two",
+          "hist": true
+        },
+        {
+          "t": "msg",
+          "seq": 4,
+          "prev": 3,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": "three",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 5,
+          "prev": 4,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": "bo",
+          "hist": true
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "note": "events after the captured seq",
+      "send": [
+        "/since ",
+        {
+          "$ref": "two"
+        },
+        "\n"
+      ],
+      "expect": [
+        {
+          "t": "msg",
+          "seq": 4,
+          "prev": 3,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": "three",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 5,
+          "prev": 4,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": "bo",
+          "hist": true
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "note": "nothing after: an empty reply",
+      "send": "/since 999\n",
+      "expect": []
+    },
+    {
+      "member": "cy",
+      "send": "/join cy\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "msg",
+          "seq": 2,
+          "prev": 1,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": "one",
+          "hist": true
+        },
+        {
+          "t": "msg",
+          "seq": 3,
+          "prev": 2,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": "two",
+          "hist": true
+        },
+        {
+          "t": "msg",
+          "seq": 4,
+          "prev": 3,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": "three",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 5,
+          "prev": 4,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": "bo",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 6,
+          "prev": 5,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:cy"
+          },
+          "nick": "cy",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:cy"
+            },
+            "nick": "cy"
+          },
+          "last_seq": 6
+        }
+      ],
+      "deliveries": {
+        "ana": [
+          {
+            "t": "join",
+            "seq": 6,
+            "prev": 5,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:cy"
+            },
+            "nick": "cy"
+          }
+        ],
+        "bo": [
+          {
+            "t": "join",
+            "seq": 6,
+            "prev": 5,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:cy"
+            },
+            "nick": "cy"
+          }
+        ]
+      }
+    },
+    {
+      "member": "cy",
+      "send": "/history x\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "usage: /history [n], n <= 200"
+        }
+      ]
+    },
+    {
+      "member": "cy",
+      "send": "/history -1\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "usage: /history [n], n <= 200"
+        }
+      ]
+    },
+    {
+      "member": "cy",
+      "note": "does not fit an integer",
+      "send": "/history 99999999999999999999\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "usage: /history [n], n <= 200"
+        }
+      ]
+    },
+    {
+      "member": "cy",
+      "send": "/since -1\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "usage: /since <seq>"
+        }
+      ]
+    },
+    {
+      "member": "cy",
+      "send": "/since 1.5\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "usage: /since <seq>"
+        }
+      ]
+    },
+    {
+      "member": "cy",
+      "send": "/since\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "usage: /since <seq>"
+        }
+      ]
+    },
+    {
+      "member": "cy",
+      "note": "largest u64",
+      "send": "/since 18446744073709551615\n",
+      "expect": []
+    },
+    {
+      "member": "cy",
+      "note": "one more does not parse",
+      "send": "/since 18446744073709551616\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "usage: /since <seq>"
+        }
+      ]
+    }
+  ]
+}

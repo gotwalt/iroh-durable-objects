@@ -1,0 +1,443 @@
+{
+  "name": "shared-log",
+  "description": "Room events and diagnostic records share one log and one seq. prev skips the diagnostic records; /since and /history return room events only; ready.last_seq is the newest room event.",
+  "members": [
+    "ana",
+    "bo"
+  ],
+  "steps": [
+    {
+      "member": "ana",
+      "send": "/join ana\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "nick": "ana"
+          },
+          "last_seq": 1
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "send": "/join bo\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 2,
+          "prev": 1,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": "bo",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo"
+          },
+          "last_seq": 2
+        }
+      ],
+      "deliveries": {
+        "ana": [
+          {
+            "t": "join",
+            "seq": 2,
+            "prev": 1,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo"
+          }
+        ]
+      }
+    },
+    {
+      "member": "ana",
+      "send": "/say first\n",
+      "expect": [
+        {
+          "t": "ok",
+          "seq": 3,
+          "prev": 2
+        }
+      ],
+      "deliveries": {
+        "bo": [
+          {
+            "t": "msg",
+            "seq": 3,
+            "prev": 2,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "nick": "ana",
+            "text": "first"
+          }
+        ]
+      }
+    },
+    {
+      "member": "ana",
+      "note": "a diagnostic record takes seq 4",
+      "proto": "ctl",
+      "send": "ping\n",
+      "expect": [
+        "echo: ping (#4, total 4, yours 3)"
+      ],
+      "deliveries": {
+        "ana": [
+          {
+            "$text": [
+              "hello from ",
+              {
+                "$ref": "room"
+              },
+              ": you are ",
+              {
+                "$ref": "peer:ana"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "member": "ana",
+      "note": "seq 5, prev 3",
+      "send": "/say second\n",
+      "expect": [
+        {
+          "t": "ok",
+          "seq": 5,
+          "prev": 3
+        }
+      ],
+      "deliveries": {
+        "bo": [
+          {
+            "t": "msg",
+            "seq": 5,
+            "prev": 3,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "nick": "ana",
+            "text": "second"
+          }
+        ]
+      }
+    },
+    {
+      "member": "ana",
+      "proto": "ctl",
+      "send": "/log 10\n",
+      "expect": [
+        [
+          {
+            "seq": 1,
+            "ts_ms": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "kind": "join",
+            "text": ""
+          },
+          {
+            "seq": 2,
+            "ts_ms": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "kind": "join",
+            "text": ""
+          },
+          {
+            "seq": 3,
+            "ts_ms": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "kind": "msg",
+            "text": "first"
+          },
+          {
+            "seq": 4,
+            "ts_ms": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "kind": "ctl",
+            "text": "ping"
+          },
+          {
+            "seq": 5,
+            "ts_ms": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "kind": "msg",
+            "text": "second"
+          }
+        ]
+      ]
+    },
+    {
+      "member": "ana",
+      "proto": "ctl",
+      "send": "/count\n",
+      "expect": [
+        {
+          "total": 5,
+          "yours": 4,
+          "peers": 2
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "note": "room events only",
+      "send": "/since 0\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 2,
+          "prev": 1,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": "bo",
+          "hist": true
+        },
+        {
+          "t": "msg",
+          "seq": 3,
+          "prev": 2,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": "first",
+          "hist": true
+        },
+        {
+          "t": "msg",
+          "seq": 5,
+          "prev": 3,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": "second",
+          "hist": true
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "send": "/history 3\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 2,
+          "prev": 1,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": "bo",
+          "hist": true
+        },
+        {
+          "t": "msg",
+          "seq": 3,
+          "prev": 2,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": "first",
+          "hist": true
+        },
+        {
+          "t": "msg",
+          "seq": 5,
+          "prev": 3,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": "second",
+          "hist": true
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "note": "last_seq is the newest room event",
+      "send": "/join\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 2,
+          "prev": 1,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": "bo",
+          "hist": true
+        },
+        {
+          "t": "msg",
+          "seq": 3,
+          "prev": 2,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": "first",
+          "hist": true
+        },
+        {
+          "t": "msg",
+          "seq": 5,
+          "prev": 3,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": "second",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo"
+          },
+          "last_seq": 5
+        }
+      ]
+    }
+  ]
+}

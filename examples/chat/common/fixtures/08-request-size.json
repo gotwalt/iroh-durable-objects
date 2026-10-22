@@ -1,0 +1,338 @@
+{
+  "name": "request-size",
+  "description": "A request line is at most 1024 bytes, not counting its terminator. A request larger than 1026 bytes in all is refused unread. Requests that fail to parse do not count against the rate limit. Text is UTF-8.",
+  "members": [
+    "ana",
+    "bo"
+  ],
+  "steps": [
+    {
+      "member": "ana",
+      "send": "/join ana\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "nick": "ana"
+          },
+          "last_seq": 1
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "send": "/join bo\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 2,
+          "prev": 1,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": "bo",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo"
+          },
+          "last_seq": 2
+        }
+      ],
+      "deliveries": {
+        "ana": [
+          {
+            "t": "join",
+            "seq": 2,
+            "prev": 1,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo"
+          }
+        ]
+      }
+    },
+    {
+      "member": "ana",
+      "note": "line of 1024 bytes: accepted, and delivered whole",
+      "send": [
+        "/say ",
+        {
+          "$repeat": [
+            "a",
+            1019
+          ]
+        },
+        "\n"
+      ],
+      "expect": [
+        {
+          "t": "ok",
+          "seq": 3,
+          "prev": 2
+        }
+      ],
+      "deliveries": {
+        "bo": [
+          {
+            "t": "msg",
+            "seq": 3,
+            "prev": 2,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "nick": "ana",
+            "text": {
+              "$text": [
+                {
+                  "$repeat": [
+                    "a",
+                    1019
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "member": "ana",
+      "note": "line of 1025 bytes",
+      "send": [
+        "/say ",
+        {
+          "$repeat": [
+            "a",
+            1020
+          ]
+        },
+        "\n"
+      ],
+      "expect": [
+        {
+          "t": "err",
+          "text": "request too long"
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "1024 bytes and CRLF",
+      "send": [
+        "/say ",
+        {
+          "$repeat": [
+            "a",
+            1019
+          ]
+        },
+        "\r\n"
+      ],
+      "expect": [
+        {
+          "t": "ok",
+          "seq": 4,
+          "prev": 3
+        }
+      ],
+      "deliveries": {
+        "bo": [
+          {
+            "t": "msg",
+            "seq": 4,
+            "prev": 3,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "nick": "ana",
+            "text": {
+              "$text": [
+                {
+                  "$repeat": [
+                    "a",
+                    1019
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "member": "ana",
+      "note": "1027 bytes in all",
+      "send": [
+        "/say ",
+        {
+          "$repeat": [
+            "a",
+            1020
+          ]
+        },
+        "\r\n"
+      ],
+      "expect": [
+        {
+          "t": "err",
+          "text": "request too long or unreadable"
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "far beyond the limit",
+      "send": [
+        "/say ",
+        {
+          "$repeat": [
+            "a",
+            1030
+          ]
+        },
+        "\n"
+      ],
+      "expect": [
+        {
+          "t": "err",
+          "text": "request too long or unreadable"
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "not UTF-8",
+      "send": [
+        "/say ",
+        {
+          "$hex": "ff"
+        },
+        "\n"
+      ],
+      "expect": [
+        {
+          "t": "err",
+          "text": "request is not utf-8"
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "a truncated UTF-8 sequence",
+      "send": [
+        "/say caf",
+        {
+          "$hex": "c3"
+        },
+        "\n"
+      ],
+      "expect": [
+        {
+          "t": "err",
+          "text": "request is not utf-8"
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "1023 bytes of two-byte characters",
+      "send": [
+        "/say ",
+        {
+          "$repeat": [
+            "é",
+            509
+          ]
+        },
+        "\n"
+      ],
+      "expect": [
+        {
+          "t": "ok",
+          "seq": 5,
+          "prev": 4
+        }
+      ],
+      "deliveries": {
+        "bo": [
+          {
+            "t": "msg",
+            "seq": 5,
+            "prev": 4,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "nick": "ana",
+            "text": {
+              "$text": [
+                {
+                  "$repeat": [
+                    "é",
+                    509
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,542 @@
+{
+  "name": "quit-and-rejoin",
+  "description": "/quit stores a part event and stops deliveries to the member. A returning member keeps its previous nick if it is free.",
+  "members": [
+    "ana",
+    "bo",
+    "cy"
+  ],
+  "steps": [
+    {
+      "member": "ana",
+      "send": "/join ana\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "nick": "ana"
+          },
+          "last_seq": 1
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "send": "/join bo\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 2,
+          "prev": 1,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": "bo",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo"
+          },
+          "last_seq": 2
+        }
+      ],
+      "deliveries": {
+        "ana": [
+          {
+            "t": "join",
+            "seq": 2,
+            "prev": 1,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo"
+          }
+        ]
+      }
+    },
+    {
+      "member": "cy",
+      "send": "/join cy\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 2,
+          "prev": 1,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": "bo",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 3,
+          "prev": 2,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:cy"
+          },
+          "nick": "cy",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:cy"
+            },
+            "nick": "cy"
+          },
+          "last_seq": 3
+        }
+      ],
+      "deliveries": {
+        "ana": [
+          {
+            "t": "join",
+            "seq": 3,
+            "prev": 2,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:cy"
+            },
+            "nick": "cy"
+          }
+        ],
+        "bo": [
+          {
+            "t": "join",
+            "seq": 3,
+            "prev": 2,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:cy"
+            },
+            "nick": "cy"
+          }
+        ]
+      }
+    },
+    {
+      "member": "bo",
+      "note": "ana and cy are sent the part event",
+      "send": "/quit gone fishing\n",
+      "expect": [
+        {
+          "t": "ok",
+          "seq": 4,
+          "prev": 3
+        }
+      ],
+      "deliveries": {
+        "ana": [
+          {
+            "t": "part",
+            "seq": 4,
+            "prev": 3,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo",
+            "reason": "gone fishing"
+          }
+        ],
+        "cy": [
+          {
+            "t": "part",
+            "seq": 4,
+            "prev": 3,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo",
+            "reason": "gone fishing"
+          }
+        ]
+      }
+    },
+    {
+      "member": "bo",
+      "note": "bo is no longer joined",
+      "send": "/who\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "not joined: send /join [nick] first"
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "send": "/say anyone?\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "not joined: send /join [nick] first"
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "bo is not listed",
+      "send": "/who\n",
+      "expect": [
+        {
+          "t": "who",
+          "members": [
+            {
+              "peer": {
+                "$ref": "peer:ana"
+              },
+              "nick": "ana",
+              "present": true
+            },
+            {
+              "peer": {
+                "$ref": "peer:cy"
+              },
+              "nick": "cy",
+              "present": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "reaches cy only",
+      "send": "/say still here\n",
+      "expect": [
+        {
+          "t": "ok",
+          "seq": 5,
+          "prev": 4
+        }
+      ],
+      "deliveries": {
+        "cy": [
+          {
+            "t": "msg",
+            "seq": 5,
+            "prev": 4,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "nick": "ana",
+            "text": "still here"
+          }
+        ]
+      }
+    },
+    {
+      "member": "bo",
+      "note": "rejoins with its previous nick; history includes its own part",
+      "send": "/join\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 2,
+          "prev": 1,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": "bo",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 3,
+          "prev": 2,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:cy"
+          },
+          "nick": "cy",
+          "hist": true
+        },
+        {
+          "t": "part",
+          "seq": 4,
+          "prev": 3,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": "bo",
+          "reason": "gone fishing",
+          "hist": true
+        },
+        {
+          "t": "msg",
+          "seq": 5,
+          "prev": 4,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": "still here",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 6,
+          "prev": 5,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": "bo",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo"
+          },
+          "last_seq": 6
+        }
+      ],
+      "deliveries": {
+        "ana": [
+          {
+            "t": "join",
+            "seq": 6,
+            "prev": 5,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo"
+          }
+        ],
+        "cy": [
+          {
+            "t": "join",
+            "seq": 6,
+            "prev": 5,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo"
+          }
+        ]
+      }
+    },
+    {
+      "member": "bo",
+      "note": "no reason: reason is the empty string",
+      "send": "/quit\n",
+      "expect": [
+        {
+          "t": "ok",
+          "seq": 7,
+          "prev": 6
+        }
+      ],
+      "deliveries": {
+        "ana": [
+          {
+            "t": "part",
+            "seq": 7,
+            "prev": 6,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo",
+            "reason": ""
+          }
+        ],
+        "cy": [
+          {
+            "t": "part",
+            "seq": 7,
+            "prev": 6,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo",
+            "reason": ""
+          }
+        ]
+      }
+    },
+    {
+      "member": "bo",
+      "send": "/quit again\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "not joined: send /join [nick] first"
+        }
+      ]
+    },
+    {
+      "member": "cy",
+      "send": "/quit\n",
+      "expect": [
+        {
+          "t": "ok",
+          "seq": 8,
+          "prev": 7
+        }
+      ],
+      "deliveries": {
+        "ana": [
+          {
+            "t": "part",
+            "seq": 8,
+            "prev": 7,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:cy"
+            },
+            "nick": "cy",
+            "reason": ""
+          }
+        ]
+      }
+    },
+    {
+      "member": "ana",
+      "send": "/who\n",
+      "expect": [
+        {
+          "t": "who",
+          "members": [
+            {
+              "peer": {
+                "$ref": "peer:ana"
+              },
+              "nick": "ana",
+              "present": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
