@@ -1,8 +1,9 @@
 # 013: TypeScript owns the Durable Object; Rust is a wasm library
 
-**Status:** proposed (2026-10-22). Replaces the app API of 011 and the glue
-layout of 011 and 012. Narrows P5's explicit-clock claim in `spec.md` §1,
-which needs review. Evidence: `docs/verification/ts-host.md`.
+**Status:** accepted (2026-10-22). Replaces the app API of 011 and the glue
+layout of 011 and 012. Narrows the explicit-clock claim of the sans-io
+principle (P5 in `spec.md` §1), as the maintainer accepted; `spec.md` carries
+the new wording. Evidence: `docs/verification/ts-host.md`.
 
 iroh-do is a feasibility study. This change keeps no compatibility with the
 current deployment.
