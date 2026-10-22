@@ -11,7 +11,9 @@ locals {
   main_module = local.manifest == null ? "index.js" : local.manifest.main_module
   bundle_js   = local.manifest == null ? "${var.worker_bundle_dir}/index.js" : "${local.manifest_dir}/${local.manifest.main_module}"
 
-  # Part name => file. The name is the import specifier in the main module.
+  # Part name => file. The name is the import specifier in the main module. The
+  # manifest lists the main module among its modules; it is uploaded as the
+  # script's content, not as a part.
   bundle_files = local.manifest == null ? {
     "index_bg.wasm" = {
       content_file = "${var.worker_bundle_dir}/index_bg.wasm"
@@ -21,7 +23,7 @@ locals {
     for m in local.manifest.modules : m.name => {
       content_file = "${local.manifest_dir}/${m.path}"
       content_type = m.content_type
-    }
+    } if m.name != local.manifest.main_module
   }
 
   # Bound as BUNDLE_SHA256 and reported in each endpoint's status. It also makes

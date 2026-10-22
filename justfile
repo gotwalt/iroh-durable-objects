@@ -117,16 +117,19 @@ up: build build-ts _ts-token
     admin=$(tofu -chdir="{{infra}}" output -raw admin_url)
     echo "admin URL:             $admin"
     echo "TypeScript deployment: $(tofu -chdir="{{infra}}" output -raw endpoint_url_template_ts), admin $(tofu -chdir="{{infra}}" output -raw admin_url_ts)"
-    echo "waiting for the ACM certificate on $admin (first apply: usually a few minutes)..."
-    for i in $(seq 1 90); do
-        code=$(curl -s -o /dev/null -w '%{http_code}' -X GET "$admin/mint" || true)
-        if [ "$code" != "000" ]; then
-            echo "TLS OK (GET /mint -> $code). Next: just mint chat && just demo"; exit 0
-        fi
-        sleep 10
+    admin_ts=$(tofu -chdir="{{infra}}" output -raw admin_url_ts)
+    # Each deployment has its own certificate pack; both are polled.
+    for a in "$admin" "$admin_ts"; do
+        echo "waiting for the ACM certificate on $a (first apply: usually a few minutes)..."
+        ok=
+        for i in $(seq 1 90); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -X GET "$a/mint" || true)
+            if [ "$code" != "000" ]; then echo "TLS OK on $a (GET /mint -> $code)"; ok=1; break; fi
+            sleep 10
+        done
+        [ -n "$ok" ] || { echo "certificate not serving yet on $a; see: tofu -chdir=examples/deployment/infra state list | grep certificate_pack" >&2; exit 1; }
     done
-    echo "certificate not serving yet; its status: tofu -chdir=examples/deployment/infra state show module.iroh_do.cloudflare_certificate_pack.wildcard" >&2
-    exit 1
+    echo "Next: just mint chat && just demo"
 
 # Mint an endpoint of app APP (default chat) inside the Worker; write E (never the key) to
 # .demo/endpoint. LOCAL=1 mints in `just local-up`'s workerd instead, into .demo/endpoint.local.APP
