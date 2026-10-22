@@ -14,6 +14,7 @@ export type EventName =
   | "room_delivery"
   | "room_dial_failed"
   | "dial_back"
+  | "dial_back_record_failed"
   | "bad_schedule_key"
   | "prune_schedule_failed"
   | "task_failed";

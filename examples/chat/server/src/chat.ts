@@ -5,7 +5,7 @@ import { IrohDurableObject, type Protocols, type Timings } from "iroh-do";
 import { Ctl } from "./ctl";
 import { serveEcho } from "./echo";
 import { rethrowTrap } from "./errors";
-import { background, errorText, logger } from "./log";
+import { errorText, logger } from "./log";
 import { DialBack, type DialBackStats } from "./notify";
 import { CTL_ALPN, ECHO_ALPN, ROOM_ALPN } from "./protocol";
 import { Room, type RoomStats } from "./room";
@@ -73,14 +73,15 @@ export class Chat extends IrohDurableObject<ChatEnv> {
     };
   }
 
-  protected override onAlarm(key: string): void {
+  protected override async onAlarm(key: string): Promise<void> {
     if (key === PRUNE_KEY) {
       const due = this.#storage.prune(Date.now());
       if (due !== null) this.#schedulePrune(due);
     } else if (key.startsWith(DIAL_BACK_KEY)) {
-      // Not awaited, so that the alarm's other due work does not wait for the dial and the
-      // linger. A failed dial-back is recorded, not retried.
-      background(this.#dialBack.run(key.slice(DIAL_BACK_KEY.length)), this.#log, "dial-back");
+      // Awaited until the line is written, so that the alarm event covers the dial and the
+      // base class sees a wasm trap in it. The wait for the peer's close, at most 5 s, runs on
+      // after the event. A failed dial-back is recorded, not retried.
+      await this.#dialBack.run(key.slice(DIAL_BACK_KEY.length));
     } else {
       this.#log.warn("bad_schedule_key", { key });
     }
