@@ -21,7 +21,9 @@ use iroh_do_core::Activity;
 use n0_future::time::Instant;
 use tracing::{debug, info, warn};
 
-use crate::{Chat, DELIVERY_BATCH, LogKind, LogRow, Member, ROOM_ALPN, json_escape_into, store};
+use crate::{
+    Chat, DELIVERY_BATCH, LogKind, LogRow, Member, ROOM_ALPN, json_escape_into, parse_number, store,
+};
 
 /// Longest request line in bytes, excluding the terminator.
 const MAX_REQUEST: usize = 1024;
@@ -166,7 +168,7 @@ fn handle_request(chat: &Arc<Chat>, peer: EndpointId, line: &str) -> Vec<String>
     }
     let me = member(chat, peer).filter(|m| m.joined);
     let (cmd, arg) = match line.split_once(' ') {
-        Some((c, a)) => (c, a.trim()),
+        Some((c, a)) => (c, a.trim_ascii()),
         None => (line, ""),
     };
     if cmd == "/join" {
@@ -207,22 +209,22 @@ fn handle_request(chat: &Arc<Chat>, peer: EndpointId, line: &str) -> Vec<String>
             let n = if arg.is_empty() {
                 HISTORY_DEFAULT
             } else {
-                match arg.parse::<usize>() {
-                    Ok(n) => n.min(HISTORY_MAX),
-                    Err(_) => {
+                match parse_number(arg) {
+                    Some(n) => usize::try_from(n).map_or(HISTORY_MAX, |n| n.min(HISTORY_MAX)),
+                    None => {
                         return vec![err(&format!("usage: /history [n], n <= {HISTORY_MAX}"))];
                     }
                 }
             };
             history(&events_recent(chat, n))
         }
-        "/since" => match arg.parse::<u64>() {
-            Ok(seq) => history(
+        "/since" => match parse_number(arg) {
+            Some(seq) => history(
                 &chat
                     .sql("events_after", |s| store::events_after(s, seq, SINCE_MAX))
                     .unwrap_or_default(),
             ),
-            Err(_) => vec![err("usage: /since <seq>")],
+            None => vec![err("usage: /since <seq>")],
         },
         "/quit" => {
             set_member(

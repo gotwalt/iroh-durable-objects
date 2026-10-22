@@ -314,6 +314,17 @@ pub(crate) fn truncate(s: &str, max: usize) -> &str {
     &s[..end]
 }
 
+/// Parses a numeric request argument: one or more ASCII digits and nothing else
+/// (`PROTOCOL.md`, "Numeric arguments"). A value above `u64::MAX` becomes `u64::MAX`, so
+/// that the caller's upper bound treats it like any other value above the bound.
+pub(crate) fn parse_number(arg: &str) -> Option<u64> {
+    if arg.is_empty() || !arg.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    // Only overflow can fail here.
+    Some(arg.parse().unwrap_or(u64::MAX))
+}
+
 /// Appends `s` to `out` as the inside of a JSON string.
 pub(crate) fn json_escape_into(out: &mut String, s: &str) {
     use std::fmt::Write as _;
@@ -339,6 +350,17 @@ mod tests {
         assert_eq!(truncate("abc", 5), "abc");
         assert_eq!(truncate("héllo", 2), "h");
         assert_eq!(truncate("héllo", 3), "hé");
+    }
+
+    /// Digits only; values beyond `u64` saturate.
+    #[test]
+    fn numbers() {
+        assert_eq!(parse_number("0"), Some(0));
+        assert_eq!(parse_number("007"), Some(7));
+        assert_eq!(parse_number("99999999999999999999"), Some(u64::MAX));
+        for bad in ["", "+1", "-1", "1.5", " 1", "1e3", "\u{661}"] {
+            assert_eq!(parse_number(bad), None, "{bad:?}");
+        }
     }
 
     /// Quotes, backslashes and control characters are escaped.
