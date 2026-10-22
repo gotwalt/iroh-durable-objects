@@ -19,6 +19,9 @@ demo_bin := root / "target/release/iroh-do-chat"
 run := root / "scripts/macos-sign-run.sh"
 local_port := env_var_or_default("LOCAL_PORT", "8787")
 wrangler_version := "4.130.0"
+# Shell function for recipes: prints a secret file, or fails the recipe when it is missing or empty.
+# Use as `X=$(secret FILE); export X`; `export X="$(secret FILE)"` would ignore the failure.
+secret_fn := 'secret() { [ -s "$1" ] || { echo "error: $1 is missing or empty; just up creates it" >&2; exit 1; }; cat "$1"; }'
 # The TypeScript host's bundle. ts_build is the one command that builds it; it
 # must leave a wrangler dry-run outdir with manifest.json (deploy/BUILD.md) in ts_dist.
 ts_build := "npm --prefix " + root / "examples/ts-deployment" + " run build"
@@ -68,6 +71,10 @@ bundle-info:
 build-ts:
     #!/usr/bin/env bash
     set -euo pipefail
+    # The workspace root holds the one lockfile; install when node_modules is missing or older than it.
+    if [ ! -f "{{root}}/node_modules/.package-lock.json" ] || [ "{{root}}/package-lock.json" -nt "{{root}}/node_modules/.package-lock.json" ]; then
+        npm --prefix "{{root}}" ci
+    fi
     {{ts_build}}
     [ -s "{{ts_dist}}/manifest.json" ] || { echo "error: {{ts_dist}}/manifest.json missing after the build" >&2; exit 1; }
     rm -rf "{{ts_bundle_dir}}"; mkdir -p "{{ts_bundle_dir}}"
@@ -84,34 +91,44 @@ bundle-info-ts:
       const fs = require("fs"), path = require("path"), zlib = require("zlib");
       const m = JSON.parse(fs.readFileSync(process.env.MANIFEST, "utf8")), dir = path.dirname(process.env.MANIFEST);
       console.log("bundle sha256:  " + m.bundle_sha256);
-      for (const [name, file] of [[m.main_module, m.main_module], ...m.modules.map(x => [x.name, x.path])]) {
+      for (const x of m.modules) {
+        const name = x.name, file = x.path;
         const b = fs.readFileSync(path.join(dir, file));
         console.log(name + ": " + b.length + " B raw, " + zlib.gzipSync(b, { level: 9 }).length + " B gzip -9");
       }'
 
-# Create .demo/admin_token_ts if missing (module iroh_ts's admin token).
-_ts-token:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    mkdir -p "{{demo_dir}}"; chmod 700 "{{demo_dir}}"
-    [ -s "{{demo_dir}}/admin_token_ts" ] || (umask 077; openssl rand -hex 32 > "{{demo_dir}}/admin_token_ts")
-
 # Build, apply examples/deployment/infra/ with OpenTofu, and wait until the wildcard certificate serves.
 # Applies both deployments: the Rust one (module iroh_do) and the TypeScript one (iroh_ts).
-up: build build-ts _ts-token
+up: build build-ts
     #!/usr/bin/env bash
     set -euo pipefail
+    {{secret_fn}}
     : "${CLOUDFLARE_API_TOKEN:?export CLOUDFLARE_API_TOKEN first (permissions: deploy/tofu/README.md)}"
     ls "{{infra}}"/*.auto.tfvars >/dev/null 2>&1 || {
         echo "error: copy examples/deployment/infra/terraform.tfvars.example to examples/deployment/infra/<name>.auto.tfvars and fill it in" >&2; exit 1; }
     mkdir -p "{{demo_dir}}"; chmod 700 "{{demo_dir}}"
     [ -s "{{demo_dir}}/admin_token" ] || (umask 077; openssl rand -hex 32 > "{{demo_dir}}/admin_token")
+    [ -s "{{demo_dir}}/admin_token_ts" ] || (umask 077; openssl rand -hex 32 > "{{demo_dir}}/admin_token_ts")
     [ -s "{{demo_dir}}/state_passphrase" ] || (umask 077; openssl rand -hex 32 > "{{demo_dir}}/state_passphrase")
-    export TF_VAR_admin_token="$(cat "{{demo_dir}}/admin_token")"
-    export TF_VAR_admin_token_ts="$(cat "{{demo_dir}}/admin_token_ts")"
-    export TF_VAR_state_passphrase="$(cat "{{demo_dir}}/state_passphrase")"
+    TF_VAR_admin_token=$(secret "{{demo_dir}}/admin_token"); export TF_VAR_admin_token
+    TF_VAR_admin_token_ts=$(secret "{{demo_dir}}/admin_token_ts"); export TF_VAR_admin_token_ts
+    TF_VAR_state_passphrase=$(secret "{{demo_dir}}/state_passphrase"); export TF_VAR_state_passphrase
     tofu -chdir="{{infra}}" init -input=false
     tofu -chdir="{{infra}}" apply -input=false
+    # An apply that sent a Durable Object migration leaves `migrations` in state, while the
+    # configuration then sends none: the plan shows it going to null (worker.tf, lifecycle).
+    # A second apply, an upload with no migration, clears that. It redeploys the script, so the
+    # live Durable Objects of that script restart; their stored state is kept (Cloudflare's
+    # documented behaviour for a new deployment, not tested here). On a script whose state
+    # already holds null, such as module.iroh_do's, there is nothing to clear and this is skipped.
+    rc=0; tofu -chdir="{{infra}}" plan -input=false -detailed-exitcode >/dev/null || rc=$?
+    if [ "$rc" -eq 2 ]; then
+        echo
+        echo "the plan after the apply still has changes, as expected after a migration; applying once more (it redeploys the script)"
+        tofu -chdir="{{infra}}" apply -input=false
+        rc=0; tofu -chdir="{{infra}}" plan -input=false -detailed-exitcode >/dev/null || rc=$?
+    fi
+    [ "$rc" -eq 0 ] || { echo "error: the plan after up is not empty (exit $rc); run just plan" >&2; exit 1; }
     echo
     echo "endpoint URL template: $(tofu -chdir="{{infra}}" output -raw endpoint_url_template)"
     admin=$(tofu -chdir="{{infra}}" output -raw admin_url)
@@ -139,6 +156,7 @@ up: build build-ts _ts-token
 mint APP="chat" LABEL="":
     #!/usr/bin/env bash
     set -euo pipefail
+    {{secret_fn}}
     export MINT_APP={{quote(APP)}}
     export MINT_LABEL={{quote(LABEL)}}
     if [ -n "${LOCAL:-}" ] && [ -n "${TS:-}" ]; then
@@ -148,12 +166,13 @@ mint APP="chat" LABEL="":
         out="{{demo_dir}}/endpoint.local.{{APP}}"; pre="LOCAL=1 "
         just _mint "http://admin.localhost:$port" "{{demo_dir}}/admin_token.local" "$out" "--resolve admin.localhost:$port:127.0.0.1"
     elif [ -n "${TS:-}" ]; then
-        export TF_VAR_state_passphrase="$(cat "{{demo_dir}}/state_passphrase")"
+        secret "{{demo_dir}}/admin_token_ts" >/dev/null
+        TF_VAR_state_passphrase=$(secret "{{demo_dir}}/state_passphrase"); export TF_VAR_state_passphrase
         admin=$(tofu -chdir="{{infra}}" output -raw admin_url_ts)
         out="{{demo_dir}}/endpoint.ts.{{APP}}"; pre=""
         just _mint "$admin" "{{demo_dir}}/admin_token_ts" "$out"
     else
-        export TF_VAR_state_passphrase="$(cat "{{demo_dir}}/state_passphrase")"
+        TF_VAR_state_passphrase=$(secret "{{demo_dir}}/state_passphrase"); export TF_VAR_state_passphrase
         admin=$(tofu -chdir="{{infra}}" output -raw admin_url)
         just _mint "$admin" "{{demo_dir}}/admin_token" "{{demo_dir}}/endpoint"
         out="{{demo_dir}}/endpoint"; pre=""
@@ -169,21 +188,24 @@ mint APP="chat" LABEL="":
 destroy-room E:
     #!/usr/bin/env bash
     set -euo pipefail
+    {{secret_fn}}
     e={{quote(E)}}
     [[ "$e" =~ ^[ybndrfg8ejkmcpqxot1uwisza345h769]{52}$ ]] || {
         echo "error: '$e' is not an EndpointId (52 characters of z-base-32)" >&2; exit 1; }
     extra=()
-    if [ -n "${LOCAL:-}" ]; then
+    if [ -n "${LOCAL:-}" ] && [ -n "${TS:-}" ]; then
+        echo "error: LOCAL=1 and TS=1 together are not supported; run examples/ts-deployment with npm run dev" >&2; exit 1
+    elif [ -n "${LOCAL:-}" ]; then
         port="${LOCAL_PORT:-$(cat "{{demo_dir}}/local-up.port" 2>/dev/null || echo 8787)}"
         admin="http://admin.localhost:$port"
         token="{{demo_dir}}/admin_token.local"
         extra=(--resolve "admin.localhost:$port:127.0.0.1")
     elif [ -n "${TS:-}" ]; then
-        export TF_VAR_state_passphrase="$(cat "{{demo_dir}}/state_passphrase")"
+        TF_VAR_state_passphrase=$(secret "{{demo_dir}}/state_passphrase"); export TF_VAR_state_passphrase
         admin=$(tofu -chdir="{{infra}}" output -raw admin_url_ts)
         token="{{demo_dir}}/admin_token_ts"
     else
-        export TF_VAR_state_passphrase="$(cat "{{demo_dir}}/state_passphrase")"
+        TF_VAR_state_passphrase=$(secret "{{demo_dir}}/state_passphrase"); export TF_VAR_state_passphrase
         admin=$(tofu -chdir="{{infra}}" output -raw admin_url)
         token="{{demo_dir}}/admin_token"
     fi
@@ -394,38 +416,42 @@ release VERSION:
 release-dry VERSION:
     "{{root}}/scripts/release-macos.sh" {{quote(VERSION)}} --dry
 
-# tofu plan; prints "zero diff" when there are no changes, as expected after `up`.
-plan: _ts-token
+# tofu plan, saved to .demo/plan.tfplan; prints "zero diff" when there are no changes, which `up` leaves.
+# An apply that sent a Durable Object migration leaves one more diff (migrations to null); `up` applies again to clear it.
+plan:
     #!/usr/bin/env bash
     set -euo pipefail
+    {{secret_fn}}
     : "${CLOUDFLARE_API_TOKEN:?export CLOUDFLARE_API_TOKEN first}"
-    export TF_VAR_admin_token="$(cat "{{demo_dir}}/admin_token")"
-    export TF_VAR_admin_token_ts="$(cat "{{demo_dir}}/admin_token_ts")"
-    export TF_VAR_state_passphrase="$(cat "{{demo_dir}}/state_passphrase")"
+    TF_VAR_admin_token=$(secret "{{demo_dir}}/admin_token"); export TF_VAR_admin_token
+    TF_VAR_admin_token_ts=$(secret "{{demo_dir}}/admin_token_ts"); export TF_VAR_admin_token_ts
+    TF_VAR_state_passphrase=$(secret "{{demo_dir}}/state_passphrase"); export TF_VAR_state_passphrase
     # Saved (encrypted) so that `just apply` applies exactly what was shown.
     tofu -chdir="{{infra}}" plan -input=false -detailed-exitcode -out="{{demo_dir}}/plan.tfplan" && echo "zero diff" || {
         rc=$?; [ $rc -eq 2 ] && echo "plan has changes (exit 2); saved to .demo/plan.tfplan; apply it with: just apply" >&2; exit $rc; }
 
 # Apply the plan `just plan` saved, and nothing else.
-apply: _ts-token
+apply:
     #!/usr/bin/env bash
     set -euo pipefail
+    {{secret_fn}}
     : "${CLOUDFLARE_API_TOKEN:?export CLOUDFLARE_API_TOKEN first}"
     [ -s "{{demo_dir}}/plan.tfplan" ] || { echo "error: no saved plan; run just plan first" >&2; exit 1; }
-    export TF_VAR_admin_token="$(cat "{{demo_dir}}/admin_token")"
-    export TF_VAR_admin_token_ts="$(cat "{{demo_dir}}/admin_token_ts")"
-    export TF_VAR_state_passphrase="$(cat "{{demo_dir}}/state_passphrase")"
+    TF_VAR_admin_token=$(secret "{{demo_dir}}/admin_token"); export TF_VAR_admin_token
+    TF_VAR_admin_token_ts=$(secret "{{demo_dir}}/admin_token_ts"); export TF_VAR_admin_token_ts
+    TF_VAR_state_passphrase=$(secret "{{demo_dir}}/state_passphrase"); export TF_VAR_state_passphrase
     tofu -chdir="{{infra}}" apply -input=false "{{demo_dir}}/plan.tfplan"
     rm -f "{{demo_dir}}/plan.tfplan"
 
 # tofu destroy after typed confirmation. Deletes every endpoint identity with the script.
-down: _ts-token
+down:
     #!/usr/bin/env bash
     set -euo pipefail
+    {{secret_fn}}
     : "${CLOUDFLARE_API_TOKEN:?export CLOUDFLARE_API_TOKEN first}"
-    export TF_VAR_admin_token="$(cat "{{demo_dir}}/admin_token")"
-    export TF_VAR_admin_token_ts="$(cat "{{demo_dir}}/admin_token_ts")"
-    export TF_VAR_state_passphrase="$(cat "{{demo_dir}}/state_passphrase")"
+    TF_VAR_admin_token=$(secret "{{demo_dir}}/admin_token"); export TF_VAR_admin_token
+    TF_VAR_admin_token_ts=$(secret "{{demo_dir}}/admin_token_ts"); export TF_VAR_admin_token_ts
+    TF_VAR_state_passphrase=$(secret "{{demo_dir}}/state_passphrase"); export TF_VAR_state_passphrase
     script=$(tofu -chdir="{{infra}}" output -raw script_name 2>/dev/null || echo iroh-do)
     suffix=$(tofu -chdir="{{infra}}" output -raw zone_suffix 2>/dev/null || echo "?")
     cat >&2 <<EOF
