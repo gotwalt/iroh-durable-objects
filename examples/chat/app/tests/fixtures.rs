@@ -522,7 +522,10 @@ async fn echo_request(a: &Actor, bytes: &[u8]) -> Vec<u8> {
 enum Target {
     Harness(Arc<Harness>),
     /// A `wrangler dev` on `127.0.0.1:port`, minted with the admin token.
-    Remote { port: u16, token: String },
+    Remote {
+        port: u16,
+        token: String,
+    },
 }
 
 impl Target {
@@ -546,7 +549,8 @@ impl Target {
                 let body = tokio::task::spawn_blocking(move || mint_remote(port, &token))
                     .await
                     .map_err(|e| e.to_string())??;
-                let v: Value = serde_json::from_str(&body).map_err(|e| format!("mint: {e}: {body}"))?;
+                let v: Value =
+                    serde_json::from_str(&body).map_err(|e| format!("mint: {e}: {body}"))?;
                 let id = v["id"].as_str().ok_or_else(|| format!("mint: {body}"))?;
                 let id = EndpointId::from_z32(id).map_err(|e| e.to_string())?;
                 let url = v["relay_url"].as_str().ok_or("mint: relay_url")?;
@@ -600,8 +604,7 @@ async fn run_fixture(target: Target, path: PathBuf) -> Result<(), String> {
         binds: Binds::new(),
         ids: Vec::new(),
     };
-    run.binds
-        .insert("room".into(), run.id.to_z32().into());
+    run.binds.insert("room".into(), run.id.to_z32().into());
     run.ids.push(("room".into(), run.id.to_z32()));
     for n in &names {
         let a = Actor::new(&url, run.id).await;
@@ -765,7 +768,10 @@ fn raw_template(raw: &[u8]) -> Value {
 async fn fixtures() {
     let target = match Target::from_env() {
         Some(t) => {
-            assert!(!record_mode(), "fixtures are recorded from the Rust app only");
+            assert!(
+                !record_mode(),
+                "fixtures are recorded from the Rust app only"
+            );
             t
         }
         None => Target::Harness(Arc::new(Harness::start().await.unwrap())),
