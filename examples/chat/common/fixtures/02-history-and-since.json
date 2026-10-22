@@ -1,6 +1,6 @@
 {
   "name": "history-and-since",
-  "description": "/history returns the newest n room events oldest first, /since the events after a seq. Both mark events hist:true. Bad arguments get a usage error.",
+  "description": "/history returns the newest n room events oldest first, /since the events after a seq. Both mark events hist:true. Arguments that are not digits get a usage error.",
   "members": [
     "ana",
     "bo",
@@ -586,12 +586,89 @@
     },
     {
       "member": "cy",
-      "note": "does not fit an integer",
+      "note": "above 200: the newest 200, which is every event here",
       "send": "/history 99999999999999999999\n",
       "expect": [
         {
-          "t": "err",
-          "text": "usage: /history [n], n <= 200"
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "msg",
+          "seq": 2,
+          "prev": 1,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": "one",
+          "hist": true
+        },
+        {
+          "t": "msg",
+          "seq": 3,
+          "prev": 2,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": "two",
+          "hist": true
+        },
+        {
+          "t": "msg",
+          "seq": 4,
+          "prev": 3,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": "three",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 5,
+          "prev": 4,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": "bo",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 6,
+          "prev": 5,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:cy"
+          },
+          "nick": "cy",
+          "hist": true
         }
       ]
     },
@@ -627,20 +704,15 @@
     },
     {
       "member": "cy",
-      "note": "largest u64",
+      "note": "larger than every seq: an empty reply",
       "send": "/since 18446744073709551615\n",
       "expect": []
     },
     {
       "member": "cy",
-      "note": "one more does not parse",
+      "note": "any number of digits is accepted; nothing is newer",
       "send": "/since 18446744073709551616\n",
-      "expect": [
-        {
-          "t": "err",
-          "text": "usage: /since <seq>"
-        }
-      ]
+      "expect": []
     }
   ]
 }

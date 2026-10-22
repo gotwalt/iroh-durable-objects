@@ -63,11 +63,11 @@ const router = irohRouter({ binding: "ENDPOINTS" });
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
-    const m = /^\/test\/(dial|panic|kept)\/([^/]+)$/.exec(url.pathname);
-    if (!url.hostname.startsWith("admin.") || !m) return router(req, env);
-    const stub = env.ENDPOINTS.get(env.ENDPOINTS.idFromName(m[2]));
+    const [, route, name] = /^\/test\/(dial|panic|kept)\/([^/]+)$/.exec(url.pathname) ?? [];
+    if (!url.hostname.startsWith("admin.") || route === undefined || name === undefined) return router(req, env);
+    const stub = env.ENDPOINTS.get(env.ENDPOINTS.idFromName(name));
     try {
-      switch (m[1]) {
+      switch (route) {
         case "dial":
           return Response.json({ reply: await stub.dial(url.searchParams.get("peer") ?? "") });
         case "panic":

@@ -8,9 +8,15 @@
     "examples/chat/server",
     "examples/ts-deployment"
   ],
+  "scripts": {
+    "check": "npm run check --workspaces --if-present",
+    "lint": "biome check"
+  },
   "devDependencies": {
+    "@biomejs/biome": "2.5.15",
     "miniflare": "5.20260908.0-alpha",
     "typescript": "5.9.3",
+    "vitest": "5.0.3",
     "wrangler": "4.130.0"
   }
 }

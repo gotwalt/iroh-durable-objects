@@ -1,0 +1,342 @@
+{
+  "name": "arguments",
+  "description": "Argument rules: only ASCII white space is trimmed, numbers are decimal digits without a sign and saturate at their bound, a leading BOM is part of the line.",
+  "members": [
+    "ana",
+    "bo"
+  ],
+  "steps": [
+    {
+      "member": "ana",
+      "note": "spaces and tabs around the nick are trimmed",
+      "send": "/join \t ana \t\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "nick": "ana"
+          },
+          "last_seq": 1
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "tabs around the text are trimmed",
+      "send": "/say \thi\t\n",
+      "expect": [
+        {
+          "t": "ok",
+          "seq": 2,
+          "prev": 1
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "U+00A0 is not ASCII white space: it stays in the text",
+      "send": "/say  hi \n",
+      "expect": [
+        {
+          "t": "ok",
+          "seq": 3,
+          "prev": 2
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "leading zeros are allowed",
+      "send": "/history 002\n",
+      "expect": [
+        {
+          "t": "msg",
+          "seq": 2,
+          "prev": 1,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": "hi",
+          "hist": true
+        },
+        {
+          "t": "msg",
+          "seq": 3,
+          "prev": 2,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": " hi ",
+          "hist": true
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "a sign is not a digit",
+      "send": "/history +2\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "usage: /history [n], n <= 200"
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "send": "/since +0\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "usage: /since <seq>"
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "a digit outside ASCII is not a digit",
+      "send": "/history ١\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "usage: /history [n], n <= 200"
+        }
+      ]
+    },
+    {
+      "member": "ana",
+      "note": "a leading BOM is part of the command",
+      "send": {
+        "$hex": "efbbbf2f77686f0a"
+      },
+      "expect": [
+        {
+          "t": "err",
+          "text": "unknown request"
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "send": "/join bo\n",
+      "expect": [
+        {
+          "t": "join",
+          "seq": 1,
+          "prev": 0,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "hist": true
+        },
+        {
+          "t": "msg",
+          "seq": 2,
+          "prev": 1,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": "hi",
+          "hist": true
+        },
+        {
+          "t": "msg",
+          "seq": 3,
+          "prev": 2,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:ana"
+          },
+          "nick": "ana",
+          "text": " hi ",
+          "hist": true
+        },
+        {
+          "t": "join",
+          "seq": 4,
+          "prev": 3,
+          "ts": {
+            "$any": "ts"
+          },
+          "peer": {
+            "$ref": "peer:bo"
+          },
+          "nick": "bo",
+          "hist": true
+        },
+        {
+          "t": "ready",
+          "room": {
+            "$ref": "room"
+          },
+          "you": {
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo"
+          },
+          "last_seq": 4
+        }
+      ],
+      "deliveries": {
+        "ana": [
+          {
+            "t": "join",
+            "seq": 4,
+            "prev": 3,
+            "ts": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "nick": "bo"
+          }
+        ]
+      }
+    },
+    {
+      "member": "bo",
+      "note": "only the space separates the command from its argument",
+      "send": "/say\thi\n",
+      "expect": [
+        {
+          "t": "err",
+          "text": "unknown request"
+        }
+      ]
+    },
+    {
+      "member": "bo",
+      "proto": "ctl",
+      "note": "a sign is not a digit",
+      "send": "/log +1\n",
+      "expect": [
+        "error: usage /log [n], n <= 50"
+      ],
+      "deliveries": {
+        "bo": [
+          {
+            "$text": [
+              "hello from ",
+              {
+                "$ref": "room"
+              },
+              ": you are ",
+              {
+                "$ref": "peer:bo"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "member": "bo",
+      "proto": "ctl",
+      "note": "above 50: the newest 50, which is every record here",
+      "send": "/log 99999999999999999999\n",
+      "expect": [
+        [
+          {
+            "seq": 1,
+            "ts_ms": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "kind": "join",
+            "text": ""
+          },
+          {
+            "seq": 2,
+            "ts_ms": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "kind": "msg",
+            "text": "hi"
+          },
+          {
+            "seq": 3,
+            "ts_ms": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:ana"
+            },
+            "kind": "msg",
+            "text": " hi "
+          },
+          {
+            "seq": 4,
+            "ts_ms": {
+              "$any": "ts"
+            },
+            "peer": {
+              "$ref": "peer:bo"
+            },
+            "kind": "join",
+            "text": ""
+          }
+        ]
+      ]
+    },
+    {
+      "member": "bo",
+      "proto": "ctl",
+      "send": "/callback 99999999999999999999\n",
+      "expect": [
+        "error: usage /callback <secs>, secs <= 50"
+      ]
+    },
+    {
+      "member": "bo",
+      "proto": "ctl",
+      "send": "/callback +1\n",
+      "expect": [
+        "error: usage /callback <secs>, secs <= 50"
+      ]
+    }
+  ]
+}

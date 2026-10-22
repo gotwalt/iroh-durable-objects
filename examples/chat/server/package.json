@@ -2,15 +2,19 @@
   "name": "iroh-do-chat-server",
   "private": true,
   "type": "module",
-  "description": "The chat app (examples/chat/app) as a TypeScript Durable Object class on iroh-do",
+  "description": "The chat object (examples/chat/common/PROTOCOL.md) as a TypeScript Durable Object class on iroh-do",
   "exports": {
-    ".": "./src/chat.ts"
+    ".": "./src/chat.ts",
+    "./protocol": "./src/protocol.ts"
   },
   "dependencies": {
     "iroh-do": "0.1.0"
   },
   "scripts": {
     "types": "wrangler types",
-    "check": "npm run types && tsc --noEmit"
+    "check": "npm run types && tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "test": "vitest run"
   }
 }

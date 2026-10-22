@@ -14,7 +14,7 @@
     "check": "npm run types && tsc --noEmit",
     "dev": "wrangler dev --local --ip 127.0.0.1 --port ${LOCAL_PORT:-8799} --inspector-port $((${LOCAL_PORT:-8799} + 1000))",
     "test:router": "node test/router-test.mjs",
-    "test:room": "node test/room-test.mjs",
+    "test:room": "vitest run test/room.test.mjs",
     "test": "npm run test:router && npm run test:room"
   }
 }
