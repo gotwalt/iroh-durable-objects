@@ -1,0 +1,25 @@
+{
+  "alpn": {
+    "room": "iroh-do/room/1",
+    "ctl": "iroh-do/ctl/1",
+    "echo": "iroh-do/echo/1",
+    "notify": "iroh-do/notify/1"
+  },
+  "limits": {
+    "max_request": 1024,
+    "history_default": 50,
+    "history_max": 200,
+    "since_max": 500,
+    "rate_limit_requests": 10,
+    "rate_limit_window_secs": 10,
+    "nick_max": 24,
+    "max_log_text": 1024,
+    "max_callback_secs": 50,
+    "delivery_batch_ms": 50,
+    "ctl_max_line": 4096,
+    "ctl_log_default": 5,
+    "ctl_log_max": 50,
+    "log_retention_rows": 10000,
+    "log_max_age_secs": 1209600
+  }
+}
