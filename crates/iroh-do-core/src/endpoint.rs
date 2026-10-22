@@ -6,7 +6,7 @@ use iroh::Endpoint;
 use iroh::endpoint::{BindError, Builder, IdleTimeout, QuicTransportConfig, VarInt};
 use iroh_ingress_transport::{IngressTransport, OnlyIngress};
 
-use crate::{CTL_ALPN, Config, ECHO_ALPN, ROOM_ALPN};
+use crate::Config;
 
 /// Connection keep-alive interval long enough to mean "off".
 ///
@@ -16,11 +16,12 @@ use crate::{CTL_ALPN, Config, ECHO_ALPN, ROOM_ALPN};
 /// turned off, which is why the node closes idle connections itself.
 const KEEP_ALIVE_OFF: Duration = Duration::from_secs(24 * 3600);
 
-/// Binds an endpoint with no IP sockets, no relay and no address lookup, and `transport` as
-/// its only transport.
+/// Binds an endpoint with no IP sockets, no relay and no address lookup, `transport` as its
+/// only transport, accepting `alpns`.
 pub(crate) async fn bind(
     config: &Config,
     transport: IngressTransport,
+    alpns: Vec<Vec<u8>>,
 ) -> Result<Endpoint, BindError> {
     let idle_ms = u32::try_from(config.max_idle_timeout.as_millis()).unwrap_or(u32::MAX);
     let idle = IdleTimeout::from(VarInt::from_u32(idle_ms));
@@ -31,11 +32,7 @@ pub(crate) async fn bind(
     // `empty()` disables relays and address lookup (iroh 1.4.0, src/endpoint.rs:192-222).
     let builder = Builder::empty()
         .secret_key(config.secret_key.clone())
-        .alpns(vec![
-            ROOM_ALPN.to_vec(),
-            CTL_ALPN.to_vec(),
-            ECHO_ALPN.to_vec(),
-        ])
+        .alpns(alpns)
         .crypto_provider(Arc::new(rustls::crypto::ring::default_provider()))
         .transport_config(transport_config)
         .add_custom_transport(Arc::new(transport))

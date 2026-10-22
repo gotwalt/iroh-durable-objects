@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, SecretKey, endpoint::presets};
-use iroh_do_core::CTL_ALPN;
+use iroh_do_chat_app::{CTL_ALPN, ChatApp, ChatStats, store};
 use iroh_do_harness::{Harness, Timings};
 use iroh_relay_ingress::{DEFAULT_DST_VIOLATION_LIMIT, DOMAIN_SEP_CHALLENGE};
 use tokio::time::{sleep, timeout};
@@ -15,7 +15,7 @@ use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest, http::H
 #[tokio::test(flavor = "multi_thread")]
 async fn failed_dial_back_is_logged() {
     let h = Harness::start().await.unwrap();
-    let obj = h.mint(Timings::default());
+    let obj = h.mint::<ChatApp>(Timings::default());
     let ep = Endpoint::builder(presets::Minimal)
         .relay_mode(RelayMode::Custom(RelayMap::empty()))
         .bind()
@@ -33,11 +33,11 @@ async fn failed_dial_back_is_logged() {
     ep.close().await;
     sleep(Duration::from_secs(4)).await;
 
-    let rows = obj.log_rows();
+    let rows = obj.with_sql(|s| store::log_recent(s, 1000).unwrap());
     let cb: Vec<_> = rows.iter().filter(|r| r.kind == "callback").collect();
     assert_eq!(cb.len(), 1, "{rows:?}");
     assert_eq!(cb[0].text, "failed: no socket for peer");
-    assert_eq!(obj.node().unwrap().stats().dial_backs_failed, 1);
+    assert_eq!(chat_stats(&obj).dial_backs_failed, 1);
 }
 
 /// The destination-violation count survives hibernation in the socket attachment, so spreading
@@ -45,7 +45,7 @@ async fn failed_dial_back_is_logged() {
 #[tokio::test(flavor = "multi_thread")]
 async fn dst_violations_survive_hibernation() {
     let h = Harness::start().await.unwrap();
-    let obj = h.mint(Timings::default());
+    let obj = h.mint::<ChatApp>(Timings::default());
     let mut req = format!("ws://127.0.0.1:{}/relay", h.port())
         .into_client_request()
         .unwrap();
@@ -117,4 +117,11 @@ where
             other => panic!("expected a binary message, got {other:?}"),
         }
     }
+}
+
+/// The chat app's counters.
+#[allow(dead_code)]
+fn chat_stats(obj: &iroh_do_harness::DoObject) -> ChatStats {
+    obj.with_app(|a: &ChatApp| a.stats())
+        .expect("live chat app")
 }

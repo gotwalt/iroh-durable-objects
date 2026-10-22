@@ -32,7 +32,8 @@ use worker::{
     WebSocketPair, durable_object,
 };
 
-use iroh_do_core::{Config as NodeConfig, Node};
+use iroh_do_chat_app::ChatApp;
+use iroh_do_core::{APP_KEY_PREFIX, AppEntry, Config as NodeConfig, Node};
 
 use super::{
     links,
@@ -61,8 +62,6 @@ const CLOSE_DESTROYED: u16 = 1000;
 
 /// Schedule key for the pkarr republish.
 pub const SCHED_REPUBLISH: &str = "republish";
-/// Schedule key prefix for a dial-back to a peer.
-pub const SCHED_CALLBACK: &str = "callback:";
 /// Schedule key for the unauthenticated-socket sweep (handshake deadline).
 /// No `setTimeout`: pending timers would block hibernation.
 pub const SCHED_SWEEP: &str = "sweep";
@@ -458,6 +457,7 @@ impl room {
         };
         let t0 = now_ms();
         self.store.insert_identity(&ident, t0)?;
+        self.store.create_schema((app().schema)())?;
         self.wakes.set(self.store.bump("wakes")?);
         self.load();
         self.ensure_node();
@@ -639,16 +639,13 @@ impl room {
             self.publish_now().await;
         } else if d.key == SCHED_SWEEP {
             self.sweep_unauthenticated()?;
-        } else if let Some(peer) = d.key.strip_prefix(SCHED_CALLBACK) {
-            match iroh_base::PublicKey::from_z32(peer) {
-                Ok(peer) => {
-                    self.ensure_node();
-                    if let Some(node) = self.node.borrow().as_ref() {
-                        node.dial_back(peer);
-                    }
-                }
-                Err(_) => warn!(event = "bad_schedule_key", key = %d.key),
+        } else if d.key.starts_with(APP_KEY_PREFIX) {
+            self.ensure_node();
+            if let Some(node) = self.node.borrow().as_ref() {
+                node.alarm(&d.key, &d.payload);
             }
+        } else {
+            warn!(event = "bad_schedule_key", key = %d.key);
         }
         Ok(())
     }
@@ -696,7 +693,7 @@ impl DurableObject for room {
         this.load();
         if this.me.borrow().is_some() {
             // Only objects with an identity ever write (§13.4.5).
-            if let Err(e) = this.store.create_schema() {
+            if let Err(e) = this.store.create_schema((app().schema)()) {
                 error!(event = "schema_failed", endpoint = %this.endpoint(), error = %e);
             }
             match this.store.bump("wakes") {
@@ -912,12 +909,12 @@ impl DurableObject for room {
                 }
             }
         }
-        // Kinds, not keys: a callback key carries a peer's EndpointId.
+        // Kinds, not keys: an app key may carry a peer's EndpointId.
         let kinds = due
             .iter()
             .map(|d| {
-                if d.key.starts_with(SCHED_CALLBACK) {
-                    "callback"
+                if d.key.starts_with(APP_KEY_PREFIX) {
+                    "app"
                 } else {
                     d.key.as_str()
                 }
@@ -932,11 +929,6 @@ impl DurableObject for room {
             failed,
             ms = now_ms() - t0,
         );
-        // The republish row keeps an alarm at least daily, so a quiet log is
-        // pruned by age too (design note 008, Limits).
-        if let Err(e) = self.store.log_prune(now_ms()) {
-            error!(event = "log_prune_failed", endpoint = %self.endpoint(), error = %e);
-        }
         // Republishing must never stop: if no row survived (e.g. its write
         // failed inside publish_now), put one back.
         if !self.store.scheduled(SCHED_REPUBLISH).unwrap_or(true)
@@ -1021,10 +1013,15 @@ impl room {
             .ok()
             .and_then(|n| u64::try_from(n).ok())
             .unwrap_or(0);
-        let n = Node::new(config, std::sync::Arc::new(DoHost { local: me.id }));
+        let n = Node::new(config, std::sync::Arc::new(DoHost { local: me.id }), &app());
         for peer in links::peers(&me.id) {
             n.socket_authenticated(peer);
         }
         *self.node.borrow_mut() = Some(n);
     }
+}
+
+/// The app every endpoint runs.
+fn app() -> AppEntry {
+    AppEntry::of::<ChatApp>()
 }

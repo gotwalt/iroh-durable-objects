@@ -1660,6 +1660,7 @@ dependencies = [
  "getrandom 0.4.3",
  "iroh-base",
  "iroh-dns",
+ "iroh-do-chat-app",
  "iroh-do-core",
  "iroh-relay-ingress",
  "js-sys",
@@ -1675,6 +1676,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "iroh-do-chat-app"
+version = "0.1.0"
+dependencies = [
+ "iroh",
+ "iroh-do-core",
+ "n0-future",
+ "rusqlite",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "iroh-do-core"
 version = "0.1.0"
 dependencies = [
@@ -1684,6 +1697,8 @@ dependencies = [
  "n0-future",
  "ring",
  "rustls",
+ "serde_json",
+ "tokio",
  "tracing",
 ]
 
@@ -1714,9 +1729,11 @@ dependencies = [
  "bytes",
  "futures-util",
  "iroh",
+ "iroh-do-chat-app",
  "iroh-do-core",
  "iroh-relay-ingress",
  "rand 0.10.3",
+ "rusqlite",
  "serde_json",
  "tokio",
  "tokio-tungstenite",

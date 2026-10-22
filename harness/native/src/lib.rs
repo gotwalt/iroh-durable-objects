@@ -12,13 +12,14 @@
 //! stock client probes its home relay with them, and the room's members use the room as their
 //! home relay.
 //!
-//! A [`DoObject`] divides its state as a Durable Object does. What the object keeps in SQLite
-//! (identity, `wakes`, endpoint builds, scheduled callbacks, message log, members) and what the runtime
-//! keeps across hibernation (sockets, with session snapshots as their attachments) survive
-//! [`DoObject::hibernate`] and [`DoObject::evict`]. The in-memory part, the [`Node`] and the
-//! live `IngressSession`s, does not. The next event rebuilds it as a constructor would:
-//! `wakes` is incremented, sessions are restored from attachments, and their peers are
-//! announced to the node again.
+//! A [`DoObject`] divides its state as a Durable Object does. What the object keeps in storage
+//! (identity, `wakes`, endpoint builds, scheduled work, and the app's SQLite database, here an
+//! in-memory `rusqlite` connection) and what the runtime keeps across hibernation (sockets,
+//! with session snapshots as their attachments) survive [`DoObject::hibernate`] and
+//! [`DoObject::evict`]. The in-memory part, the [`Node`] with its [`App`] and the live
+//! `IngressSession`s, does not. The next event rebuilds it as a constructor would: `wakes` is
+//! incremented, the app's schema is run, sessions are restored from attachments, and their
+//! peers are announced to the node again.
 
 use std::{
     collections::HashMap,
@@ -35,8 +36,8 @@ use std::{
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 pub use iroh_do_core::{
-    Config, Counts, EndpointId, FrameSink, Host, LogKind, LogRow, LogStats, Member, Node,
-    ROOM_EVENT_KINDS, SecretKey, State, Stats,
+    App, AppEntry, Config, EndpointId, FrameSink, Host, Node, SecretKey, Sql, SqlError, State,
+    Stats, Value,
 };
 use iroh_relay_ingress::{
     DatagramBatch, Ecn, IngressConfig, IngressSession, Output, SessionSnapshot, Status,
@@ -127,20 +128,26 @@ impl Harness {
         self.addr.port()
     }
 
-    /// Creates an object with a fresh identity.
-    pub fn mint(&self, timings: Timings) -> Arc<DoObject> {
+    /// Creates an object running `A` with a fresh identity.
+    pub fn mint<A: App>(&self, timings: Timings) -> Arc<DoObject> {
+        self.mint_entry(AppEntry::of::<A>(), timings)
+    }
+
+    /// Creates an object running the app of `entry` with a fresh identity.
+    pub fn mint_entry(&self, app: AppEntry, timings: Timings) -> Arc<DoObject> {
         let secret = SecretKey::generate();
         let id = secret.public();
+        let db = rusqlite::Connection::open_in_memory().expect("in-memory SQLite");
         let obj = Arc::new_cyclic(|me| DoObject {
             me: me.clone(),
             id,
             secret,
+            app,
             timings,
             wakes: AtomicU64::new(0),
             endpoint_builds: AtomicU64::new(0),
-            callbacks: Mutex::new(Vec::new()),
-            log: Mutex::new(MessageLog::default()),
-            members: Mutex::new(HashMap::new()),
+            schedule: Mutex::new(HashMap::new()),
+            db: Mutex::new(db),
             sockets: Mutex::new(HashMap::new()),
             next_sid: AtomicU64::new(0),
             live: Mutex::new(None),
@@ -187,14 +194,15 @@ struct Live {
 pub struct DoObject {
     me: Weak<DoObject>,
     id: EndpointId,
-    // Persisted, as in the object's SQLite.
+    // Persisted, as in the object's storage.
     secret: SecretKey,
+    app: AppEntry,
     timings: Timings,
     wakes: AtomicU64,
     endpoint_builds: AtomicU64,
-    callbacks: Mutex<Vec<(EndpointId, Instant)>>,
-    log: Mutex<MessageLog>,
-    members: Mutex<HashMap<EndpointId, Member>>,
+    /// Scheduled work by key: due time and payload.
+    schedule: Mutex<HashMap<String, (Instant, String)>>,
+    db: Mutex<rusqlite::Connection>,
     // Runtime state.
     sockets: Mutex<HashMap<u64, Socket>>,
     next_sid: AtomicU64,
@@ -249,9 +257,17 @@ impl DoObject {
             .collect()
     }
 
-    /// Returns the stored member records.
-    pub fn members(&self) -> Vec<Member> {
-        lock(&self.members).values().cloned().collect()
+    /// Runs `f` on the object's database, as the app sees it.
+    pub fn with_sql<T>(&self, f: impl FnOnce(&dyn Sql) -> T) -> T {
+        let db = lock(&self.db);
+        f(&RusqliteSql(&db))
+    }
+
+    /// Runs `f` on the live app, if the object is live and runs an `A`.
+    pub fn with_app<A: App, T>(&self, f: impl FnOnce(&A) -> T) -> Option<T> {
+        let node = self.node()?;
+        let app = node.app()?.as_any().downcast_ref::<A>()?;
+        Some(f(app))
     }
 
     /// Hibernates the object: drops the node and sessions, keeping sockets and attachments.
@@ -299,6 +315,14 @@ impl DoObject {
     fn ensure_live<'a>(&self, live: &'a mut Option<Live>) -> &'a mut Live {
         live.get_or_insert_with(|| {
             let wakes = self.wakes.fetch_add(1, Ordering::SeqCst) + 1;
+            {
+                let db = lock(&self.db);
+                for stmt in (self.app.schema)() {
+                    if let Err(e) = db.execute_batch(stmt) {
+                        tracing::error!(error = %e, "app schema failed");
+                    }
+                }
+            }
             let host = Arc::new(HostImpl {
                 id: self.id,
                 alive: AtomicBool::new(true),
@@ -311,7 +335,7 @@ impl DoObject {
             config.t_silent = self.timings.t_silent;
             config.t_linger = self.timings.t_linger;
             config.max_idle_timeout = self.timings.max_idle_timeout;
-            let node = Node::new(config, host.clone());
+            let node = Node::new(config, host.clone(), &self.app);
             let cfg = IngressConfig::new(self.id);
             let mut sessions = HashMap::new();
             for (sid, socket) in lock(&self.sockets).iter() {
@@ -452,28 +476,77 @@ impl DoObject {
         l.node.socket_closed(peer);
     }
 
-    /// The alarm handler: dial back every due callback.
+    /// The alarm handler: runs every due entry.
     fn alarm(&self) {
-        let due: Vec<EndpointId> = {
-            let mut cbs = lock(&self.callbacks);
+        let due: Vec<(String, String)> = {
+            let mut sched = lock(&self.schedule);
             let now = Instant::now();
-            let (due, rest): (Vec<_>, Vec<_>) = cbs.drain(..).partition(|(_, at)| *at <= now);
-            *cbs = rest;
-            due.into_iter().map(|(p, _)| p).collect()
+            let keys: Vec<String> = sched
+                .iter()
+                .filter(|(_, (at, _))| *at <= now)
+                .map(|(k, _)| k.clone())
+                .collect();
+            keys.into_iter()
+                .filter_map(|k| sched.remove(&k).map(|(_, p)| (k, p)))
+                .collect()
         };
         if due.is_empty() {
             return;
         }
-        let mut live = lock(&self.live);
-        let l = self.ensure_live(&mut live);
-        for peer in due {
-            info!(peer = %peer.fmt_short(), "alarm: dial-back");
-            l.node.dial_back(peer);
+        let node = {
+            let mut live = lock(&self.live);
+            self.ensure_live(&mut live).node.clone()
+        };
+        for (key, payload) in due {
+            info!(key, "alarm");
+            node.alarm(&key, &payload);
         }
     }
 }
 
-/// The node's host: frame output to live sockets, callback scheduling and the message log.
+/// [`Sql`] over a `rusqlite` connection.
+struct RusqliteSql<'a>(&'a rusqlite::Connection);
+
+impl Sql for RusqliteSql<'_> {
+    fn exec(&self, query: &str, params: &[Value]) -> Result<Vec<Vec<Value>>, SqlError> {
+        use rusqlite::types::{ToSqlOutput, Value as V, ValueRef};
+        let err = |e: rusqlite::Error| SqlError(e.to_string());
+        let mut stmt = self.0.prepare(query).map_err(err)?;
+        let params: Vec<ToSqlOutput<'_>> = params
+            .iter()
+            .map(|p| {
+                ToSqlOutput::Owned(match p {
+                    Value::Null => V::Null,
+                    Value::Integer(i) => V::Integer(*i),
+                    Value::Real(f) => V::Real(*f),
+                    Value::Text(t) => V::Text(t.clone()),
+                    Value::Blob(b) => V::Blob(b.clone()),
+                })
+            })
+            .collect();
+        let n = stmt.column_count();
+        let mut rows = stmt
+            .query(rusqlite::params_from_iter(params))
+            .map_err(err)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(err)? {
+            let mut r = Vec::with_capacity(n);
+            for i in 0..n {
+                r.push(match row.get_ref(i).map_err(err)? {
+                    ValueRef::Null => Value::Null,
+                    ValueRef::Integer(i) => Value::Integer(i),
+                    ValueRef::Real(f) => Value::Real(f),
+                    ValueRef::Text(t) => Value::Text(String::from_utf8_lossy(t).into_owned()),
+                    ValueRef::Blob(b) => Value::Blob(b.to_vec()),
+                });
+            }
+            out.push(r);
+        }
+        Ok(out)
+    }
+}
+
+/// The node's host: frame output to live sockets, scheduling and SQL.
 #[derive(Debug)]
 struct HostImpl {
     id: EndpointId,
@@ -509,169 +582,14 @@ impl FrameSink for HostImpl {
     }
 }
 
-/// In-memory equivalent of the object's SQLite `log` table.
-#[derive(Debug, Default)]
-struct MessageLog {
-    rows: std::collections::VecDeque<LogRow>,
-    total: u64,
-    /// `seq` of the newest room event, as the object's `room_seq` counter.
-    room_seq: u64,
-}
-
-impl MessageLog {
-    fn append(&mut self, peer: &EndpointId, kind: LogKind, nick: &str, text: &str) -> LogRow {
-        self.total += 1;
-        let prev = if kind.is_room_event() {
-            std::mem::replace(&mut self.room_seq, self.total)
-        } else {
-            0
-        };
-        let row = LogRow {
-            seq: self.total,
-            prev,
-            ts_ms: now().as_millis() as u64,
-            peer: peer.to_z32(),
-            kind: kind.as_str().to_string(),
-            nick: nick.to_string(),
-            text: text.to_string(),
-        };
-        self.rows.push_back(row.clone());
-        let cutoff = row
-            .ts_ms
-            .saturating_sub(iroh_do_core::LOG_MAX_AGE.as_millis() as u64);
-        while self.rows.len() as u64 > iroh_do_core::LOG_RETENTION
-            || self.rows.front().is_some_and(|r| r.ts_ms < cutoff)
-        {
-            self.rows.pop_front();
-        }
-        row
-    }
-
-    fn insert(&mut self, peer: &EndpointId, kind: LogKind, text: &str) -> LogStats {
-        self.append(peer, kind, "", text);
-        let c = self.counts(peer);
-        LogStats {
-            seq: self.total,
-            total: c.total,
-            yours: c.yours,
-        }
-    }
-
-    fn counts(&self, peer: &EndpointId) -> Counts {
-        let z = peer.to_z32();
-        let peers: std::collections::HashSet<&str> =
-            self.rows.iter().map(|r| r.peer.as_str()).collect();
-        Counts {
-            total: self.total,
-            yours: self.rows.iter().filter(|r| r.peer == z).count() as u64,
-            peers: peers.len() as u64,
-        }
-    }
-}
-
-impl DoObject {
-    /// Returns the number of records ever inserted in the message log.
-    pub fn log_total(&self) -> u64 {
-        lock(&self.log).total
-    }
-
-    /// The retained message-log records, oldest first.
-    pub fn log_rows(&self) -> Vec<LogRow> {
-        lock(&self.log).rows.iter().cloned().collect()
-    }
-}
-
 impl Host for HostImpl {
-    fn log_event(&self, peer: EndpointId, kind: LogKind, text: &str) -> LogStats {
-        match self.object.upgrade() {
-            Some(obj) => lock(&obj.log).insert(&peer, kind, text),
-            None => LogStats::default(),
-        }
-    }
-
-    fn count(&self, peer: EndpointId) -> Counts {
-        match self.object.upgrade() {
-            Some(obj) => lock(&obj.log).counts(&peer),
-            None => Counts::default(),
-        }
-    }
-
-    fn total(&self) -> u64 {
-        self.object.upgrade().map_or(0, |obj| lock(&obj.log).total)
-    }
-
-    fn append(&self, peer: EndpointId, kind: LogKind, nick: &str, text: &str) -> Option<LogRow> {
-        let obj = self.object.upgrade()?;
-        Some(lock(&obj.log).append(&peer, kind, nick, text))
-    }
-
-    fn room_seq(&self) -> u64 {
-        self.object
-            .upgrade()
-            .map_or(0, |obj| lock(&obj.log).room_seq)
-    }
-
-    fn events_after(&self, seq: u64, limit: usize) -> Vec<LogRow> {
-        let Some(obj) = self.object.upgrade() else {
-            return Vec::new();
-        };
-        let log = lock(&obj.log);
-        log.rows
-            .iter()
-            .filter(|r| r.seq > seq && ROOM_EVENT_KINDS.contains(&r.kind.as_str()))
-            .take(limit)
-            .cloned()
-            .collect()
-    }
-
-    fn events_recent(&self, n: usize) -> Vec<LogRow> {
-        let Some(obj) = self.object.upgrade() else {
-            return Vec::new();
-        };
-        let log = lock(&obj.log);
-        let mut rows: Vec<LogRow> = log
-            .rows
-            .iter()
-            .rev()
-            .filter(|r| ROOM_EVENT_KINDS.contains(&r.kind.as_str()))
-            .take(n)
-            .cloned()
-            .collect();
-        rows.reverse();
-        rows
-    }
-
-    fn member(&self, peer: EndpointId) -> Option<Member> {
-        let obj = self.object.upgrade()?;
-        lock(&obj.members).get(&peer).cloned()
-    }
-
-    fn members(&self) -> Vec<Member> {
-        let Some(obj) = self.object.upgrade() else {
-            return Vec::new();
-        };
-        let mut m: Vec<Member> = lock(&obj.members)
-            .values()
-            .filter(|m| m.joined)
-            .cloned()
-            .collect();
-        m.sort_by_key(|m| m.nick.to_ascii_lowercase());
-        m
-    }
-
-    fn set_member(&self, member: &Member) {
+    fn with_sql(&self, f: &mut dyn FnMut(&dyn Sql)) {
+        // A dropped object (hibernated with no live node left) still has its database, as a
+        // Durable Object does; only a destroyed one would not.
         if let Some(obj) = self.object.upgrade() {
-            lock(&obj.members).insert(member.peer, member.clone());
+            let db = lock(&obj.db);
+            f(&RusqliteSql(&db));
         }
-    }
-
-    fn recent(&self, n: usize) -> Vec<LogRow> {
-        let Some(obj) = self.object.upgrade() else {
-            return Vec::new();
-        };
-        let log = lock(&obj.log);
-        let skip = log.rows.len().saturating_sub(n);
-        log.rows.iter().skip(skip).cloned().collect()
     }
 
     fn endpoint_built(&self) {
@@ -680,11 +598,14 @@ impl Host for HostImpl {
         }
     }
 
-    fn schedule_callback(&self, peer: EndpointId, delay: Duration) {
+    fn schedule(&self, key: &str, delay: Duration, payload: &str) {
         let Some(obj) = self.object.upgrade() else {
             return;
         };
-        lock(&obj.callbacks).push((peer, Instant::now() + delay));
+        lock(&obj.schedule).insert(
+            key.to_string(),
+            (Instant::now() + delay, payload.to_string()),
+        );
         let weak = self.object.clone();
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;
@@ -692,6 +613,12 @@ impl Host for HostImpl {
                 obj.alarm();
             }
         });
+    }
+
+    fn cancel(&self, key: &str) {
+        if let Some(obj) = self.object.upgrade() {
+            lock(&obj.schedule).remove(key);
+        }
     }
 }
 

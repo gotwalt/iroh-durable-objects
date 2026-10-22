@@ -4,6 +4,7 @@ members = [
   "crates/iroh-relay-ingress",
   "crates/iroh-ingress-transport",
   "crates/iroh-do-core",
+  "apps/chat",
   "crates/iroh-do",
   "crates/iroh-do-demo",
   "harness/native",

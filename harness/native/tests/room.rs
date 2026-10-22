@@ -16,7 +16,7 @@ use iroh::{
     Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl,
     endpoint::{Connection, presets},
 };
-use iroh_do_core::{CTL_ALPN, ROOM_ALPN};
+use iroh_do_chat_app::{CTL_ALPN, ChatApp, ChatStats, ROOM_ALPN};
 use iroh_do_harness::{DoObject, Harness, State, Timings};
 use serde_json::Value;
 use tokio::{
@@ -230,7 +230,7 @@ async fn ctl_line(obj: &DoObject, h: &Harness, request: &str) -> String {
 async fn members_exchange_messages() {
     init_tracing();
     let h = Harness::start().await.unwrap();
-    let obj = h.mint(Timings::default());
+    let obj = h.mint::<ChatApp>(Timings::default());
     let mut ana = Member::join_room(&h, &obj).await;
     let mut bo = Member::join_room(&h, &obj).await;
     let mut cy = Member::join_room(&h, &obj).await;
@@ -303,7 +303,7 @@ async fn members_exchange_messages() {
         "{st}"
     );
 
-    let s = obj.node().unwrap().stats();
+    let s = chat_stats(&obj);
     println!(
         "stats after exchange: {s:?}; incoming dials ana={} bo={} cy={}",
         ana.incoming(),
@@ -327,7 +327,7 @@ async fn members_exchange_messages() {
 async fn delivery_after_hibernation() {
     init_tracing();
     let h = Harness::start().await.unwrap();
-    let obj = h.mint(Timings::default());
+    let obj = h.mint::<ChatApp>(Timings::default());
     let ana = Member::join_room(&h, &obj).await;
     let mut bo = Member::join_room(&h, &obj).await;
     join(&ana, "ana").await;
@@ -346,7 +346,7 @@ async fn delivery_after_hibernation() {
         (Some(seq), Some("after hibernation"))
     );
     assert_eq!(obj.wakes(), wakes + 1);
-    assert_eq!(obj.node().unwrap().stats().delivery_dials, 1);
+    assert_eq!(chat_stats(&obj).delivery_dials, 1);
     assert_warm_and_quiet(&obj).await;
     ana.ep.close().await;
     bo.ep.close().await;
@@ -358,7 +358,7 @@ async fn delivery_after_hibernation() {
 async fn absent_member_catches_up_with_since() {
     init_tracing();
     let h = Harness::start().await.unwrap();
-    let obj = h.mint(Timings::default());
+    let obj = h.mint::<ChatApp>(Timings::default());
     let ana = Member::join_room(&h, &obj).await;
     let bo_key = iroh::SecretKey::generate();
     let bo = Member::with_key(&h, &obj, bo_key.clone()).await;
@@ -390,15 +390,14 @@ async fn absent_member_catches_up_with_since() {
         "{st}"
     );
 
-    let before = obj.node().unwrap().stats();
+    let before = chat_stats(&obj);
     let mut seqs = Vec::new();
     for i in 0..3 {
         seqs.push(ok_seq(&ana.one(&format!("/say missed {i}")).await));
     }
     sleep(Duration::from_millis(200)).await;
-    let s = obj.node().unwrap().stats();
-    let attempts =
-        |s: &iroh_do_harness::Stats| s.deliveries_ok + s.deliveries_failed + s.delivery_dials;
+    let s = chat_stats(&obj);
+    let attempts = |s: &ChatStats| s.deliveries_ok + s.deliveries_failed + s.delivery_dials;
     assert_eq!(
         attempts(&s),
         attempts(&before),
@@ -431,7 +430,7 @@ async fn absent_member_catches_up_with_since() {
 async fn nick_rules() {
     init_tracing();
     let h = Harness::start().await.unwrap();
-    let obj = h.mint(Timings::default());
+    let obj = h.mint::<ChatApp>(Timings::default());
     let mut ana = Member::join_room(&h, &obj).await;
     let mut bo = Member::join_room(&h, &obj).await;
 
@@ -486,7 +485,7 @@ async fn nick_rules() {
 async fn rate_limit() {
     init_tracing();
     let h = Harness::start().await.unwrap();
-    let obj = h.mint(Timings::default());
+    let obj = h.mint::<ChatApp>(Timings::default());
     let ana = Member::join_room(&h, &obj).await;
     let conn = ana.ep.connect(ana.room.clone(), ROOM_ALPN).await.unwrap();
     let r = ana.request_on(&conn, "/join ana").await;
@@ -498,7 +497,7 @@ async fn rate_limit() {
     let r = ana.request_on(&conn, "/say 10").await;
     assert_eq!(r[0]["t"], "err", "{r:?}");
     assert!(r[0]["text"].as_str().unwrap().starts_with("rate limit"));
-    assert_eq!(obj.node().unwrap().stats().rate_limited, 1);
+    assert_eq!(chat_stats(&obj).rate_limited, 1);
     conn.close(0u32.into(), b"done");
     ana.ep.close().await;
 }
@@ -510,7 +509,7 @@ async fn rate_limit() {
 async fn quiet_member_reachable_after_60s() {
     init_tracing();
     let h = Harness::start().await.unwrap();
-    let obj = h.mint(Timings::default());
+    let obj = h.mint::<ChatApp>(Timings::default());
     let ana = Member::join_room(&h, &obj).await;
     let mut bo = Member::join_room(&h, &obj).await;
     join(&ana, "ana").await;
@@ -545,7 +544,7 @@ async fn quiet_member_reachable_after_60s() {
 async fn prev_detects_missed_events_exactly() {
     init_tracing();
     let h = Harness::start().await.unwrap();
-    let obj = h.mint(Timings::default());
+    let obj = h.mint::<ChatApp>(Timings::default());
     let ana = Member::join_room(&h, &obj).await;
     let bo_key = iroh::SecretKey::generate();
     let mut bo = Member::with_key(&h, &obj, bo_key.clone()).await;
@@ -603,4 +602,11 @@ async fn prev_detects_missed_events_exactly() {
     assert_eq!(five["prev"].as_u64(), Some(four));
     ana.ep.close().await;
     bo.ep.close().await;
+}
+
+/// The chat app's counters.
+#[allow(dead_code)]
+fn chat_stats(obj: &iroh_do_harness::DoObject) -> ChatStats {
+    obj.with_app(|a: &ChatApp| a.stats())
+        .expect("live chat app")
 }

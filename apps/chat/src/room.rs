@@ -1,7 +1,7 @@
 //! The chat room, `iroh-do/room/1` (design note 008).
 //!
 //! Requests arrive on bidirectional streams that members open, one request per stream.
-//! Events are delivered on unidirectional streams that the node opens, on a connection to the
+//! Events are delivered on unidirectional streams that the app opens, on a connection to the
 //! member that is already open in either direction or else on a new one dialed over the
 //! member's relay socket.
 
@@ -15,15 +15,13 @@ use std::{
 use iroh::{
     EndpointId,
     endpoint::{Connection, RecvStream, SendStream},
+    protocol::{AcceptError, ProtocolHandler},
 };
-use iroh_ingress_transport::peer_endpoint_addr;
+use iroh_do_core::Activity;
 use n0_future::time::Instant;
 use tracing::{debug, info, warn};
 
-use crate::{
-    DELIVERY_BATCH, LogKind, LogRow, MAX_LOG_TEXT, Member, ROOM_ALPN, Shared,
-    protocols::{self, Activity},
-};
+use crate::{Chat, DELIVERY_BATCH, LogKind, LogRow, Member, ROOM_ALPN, json_escape_into, store};
 
 /// Longest request line in bytes, excluding the terminator.
 const MAX_REQUEST: usize = 1024;
@@ -48,7 +46,7 @@ const NICK_MAX: usize = 24;
 #[derive(Default)]
 pub(crate) struct Room {
     /// Open room connections by peer, whichever side dialed. The newest one wins.
-    conns: HashMap<EndpointId, (Connection, Arc<Activity>)>,
+    conns: HashMap<EndpointId, (Connection, Option<Arc<Activity>>)>,
     /// Event lines waiting for delivery, by recipient. A key is present while that
     /// recipient's delivery task runs.
     outbox: HashMap<EndpointId, Vec<String>>,
@@ -56,29 +54,30 @@ pub(crate) struct Room {
     requests: HashMap<EndpointId, VecDeque<Instant>>,
 }
 
-impl Room {
-    /// Forgets every connection; called when the endpoint is closed.
-    pub(crate) fn clear_connections(&mut self) {
-        self.conns.clear();
+/// `iroh-do/room/1`.
+#[derive(Debug, Clone)]
+pub(crate) struct RoomProtocol(pub(crate) Arc<Chat>);
+
+impl ProtocolHandler for RoomProtocol {
+    async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+        serve_conn(self.0.clone(), conn).await;
+        Ok(())
     }
 }
 
-/// Returns the number of joined members and how many of them are present.
-pub(crate) fn member_counts(node: &Shared) -> (usize, usize) {
-    let members = node.host().members();
-    let present = members.iter().filter(|m| node.has_socket(&m.peer)).count();
-    (members.len(), present)
-}
-
-/// Serves requests on a room connection until it closes.
-pub(crate) async fn serve_conn(node: Arc<Shared>, conn: Connection, activity: Arc<Activity>) {
+/// Serves requests on a room connection, accepted or dialed, until it closes.
+async fn serve_conn(chat: Arc<Chat>, conn: Connection) {
     let peer = conn.remote_id();
-    register(&node, &conn, &activity);
+    let activity = chat.ctx.activity(&conn);
+    chat.room()
+        .conns
+        .insert(peer, (conn.clone(), activity.clone()));
     while let Ok((send, recv)) = conn.accept_bi().await {
-        let (n, a) = (node.clone(), activity.clone());
-        node.spawn(async move { request_stream(n, peer, a, send, recv).await });
+        let (c, a) = (chat.clone(), activity.clone());
+        chat.ctx
+            .spawn(async move { request_stream(c, peer, a, send, recv).await });
     }
-    let mut room = node.room();
+    let mut room = chat.room();
     if let Entry::Occupied(e) = room.conns.entry(peer)
         && e.get().0.stable_id() == conn.stable_id()
     {
@@ -86,25 +85,19 @@ pub(crate) async fn serve_conn(node: Arc<Shared>, conn: Connection, activity: Ar
     }
 }
 
-fn register(node: &Shared, conn: &Connection, activity: &Arc<Activity>) {
-    node.room()
-        .conns
-        .insert(conn.remote_id(), (conn.clone(), activity.clone()));
-}
-
 /// Reads one request, handles it and writes the reply.
 async fn request_stream(
-    node: Arc<Shared>,
+    chat: Arc<Chat>,
     peer: EndpointId,
-    activity: Arc<Activity>,
+    activity: Option<Arc<Activity>>,
     mut send: SendStream,
     mut recv: RecvStream,
 ) {
-    let _open = activity.stream();
+    let _open = activity.as_ref().map(|a| a.stream());
     // Room for a `\r\n` terminator.
     let replies = match recv.read_to_end(MAX_REQUEST + 2).await {
         Ok(bytes) => match parse_request(&bytes) {
-            Ok(line) => handle(&node, peer, &line),
+            Ok(line) => handle(&chat, peer, &line),
             Err(e) => vec![err(e)],
         },
         Err(e) => {
@@ -112,7 +105,9 @@ async fn request_stream(
             vec![err("request too long or unreadable")]
         }
     };
-    activity.touch();
+    if let Some(a) = &activity {
+        a.touch();
+    }
     let mut out = String::new();
     for r in replies {
         out.push_str(&r);
@@ -139,8 +134,8 @@ fn parse_request(bytes: &[u8]) -> Result<String, &'static str> {
 /// Handles one request, logs it as a `room_request` event and returns the reply lines.
 ///
 /// The event records the request kind and the member's nick, never the text.
-fn handle(node: &Arc<Shared>, peer: EndpointId, line: &str) -> Vec<String> {
-    let replies = handle_request(node, peer, line);
+fn handle(chat: &Arc<Chat>, peer: EndpointId, line: &str) -> Vec<String> {
+    let replies = handle_request(chat, peer, line);
     let cmd = line.split(' ').next().unwrap_or_default();
     let kind = match cmd {
         "/join" | "/say" | "/me" | "/nick" | "/who" | "/history" | "/since" | "/quit" => &cmd[1..],
@@ -150,7 +145,7 @@ fn handle(node: &Arc<Shared>, peer: EndpointId, line: &str) -> Vec<String> {
         .first()
         .and_then(|r| r.strip_prefix("{\"t\":\"err\""))
         .is_some();
-    let nick = node.host().member(peer).map(|m| m.nick).unwrap_or_default();
+    let nick = member(chat, peer).map(|m| m.nick).unwrap_or_default();
     info!(event = "room_request", peer = %peer.to_z32(), kind, nick, ok = !error);
     replies
 }
@@ -159,24 +154,23 @@ fn handle(node: &Arc<Shared>, peer: EndpointId, line: &str) -> Vec<String> {
 ///
 /// Holding the room lock serializes requests, so checks such as nick uniqueness and the
 /// writes that depend on them are atomic on multi-threaded hosts too.
-fn handle_request(node: &Arc<Shared>, peer: EndpointId, line: &str) -> Vec<String> {
-    let mut room = node.room();
+fn handle_request(chat: &Arc<Chat>, peer: EndpointId, line: &str) -> Vec<String> {
+    let mut room = chat.room();
     if !allow(&mut room, peer) {
         drop(room);
-        node.update_stats(|s| s.rate_limited += 1);
+        chat.update_stats(|s| s.rate_limited += 1);
         return vec![err(&format!(
             "rate limit: at most {RATE_LIMIT} requests per {}s",
             RATE_WINDOW.as_secs()
         ))];
     }
-    let host = node.host();
-    let me = host.member(peer).filter(|m| m.joined);
+    let me = member(chat, peer).filter(|m| m.joined);
     let (cmd, arg) = match line.split_once(' ') {
         Some((c, a)) => (c, a.trim()),
         None => (line, ""),
     };
     if cmd == "/join" {
-        return join(node, &mut room, peer, me, arg);
+        return join(chat, &mut room, peer, me, arg);
     }
     let Some(me) = me else {
         return vec![err("not joined: send /join [nick] first")];
@@ -191,21 +185,24 @@ fn handle_request(node: &Arc<Shared>, peer: EndpointId, line: &str) -> Vec<Strin
             } else {
                 LogKind::Act
             };
-            store_and_publish(node, &mut room, peer, kind, &me.nick, arg)
+            store_and_publish(chat, &mut room, peer, kind, &me.nick, arg)
         }
-        "/nick" => match check_nick(node, peer, arg) {
+        "/nick" => match check_nick(chat, peer, arg) {
             Err(e) => vec![err(&e)],
             Ok(()) if arg == me.nick => vec![err("nick unchanged")],
             Ok(()) => {
                 let old = me.nick.clone();
-                host.set_member(&Member {
-                    nick: arg.to_string(),
-                    ..me
-                });
-                store_and_publish(node, &mut room, peer, LogKind::Nick, arg, &old)
+                set_member(
+                    chat,
+                    &Member {
+                        nick: arg.to_string(),
+                        ..me
+                    },
+                );
+                store_and_publish(chat, &mut room, peer, LogKind::Nick, arg, &old)
             }
         },
-        "/who" => vec![who(node)],
+        "/who" => vec![who(chat)],
         "/history" => {
             let n = if arg.is_empty() {
                 HISTORY_DEFAULT
@@ -217,19 +214,26 @@ fn handle_request(node: &Arc<Shared>, peer: EndpointId, line: &str) -> Vec<Strin
                     }
                 }
             };
-            history(&host.events_recent(n))
+            history(&events_recent(chat, n))
         }
         "/since" => match arg.parse::<u64>() {
-            Ok(seq) => history(&host.events_after(seq, SINCE_MAX)),
+            Ok(seq) => history(
+                &chat
+                    .sql("events_after", |s| store::events_after(s, seq, SINCE_MAX))
+                    .unwrap_or_default(),
+            ),
             Err(_) => vec![err("usage: /since <seq>")],
         },
         "/quit" => {
-            host.set_member(&Member {
-                joined: false,
-                ..me.clone()
-            });
+            set_member(
+                chat,
+                &Member {
+                    joined: false,
+                    ..me.clone()
+                },
+            );
             room.outbox.remove(&peer);
-            store_and_publish(node, &mut room, peer, LogKind::Part, &me.nick, arg)
+            store_and_publish(chat, &mut room, peer, LogKind::Part, &me.nick, arg)
         }
         _ => vec![err("unknown request")],
     }
@@ -253,19 +257,18 @@ fn allow(room: &mut Room, peer: EndpointId) -> bool {
 }
 
 fn join(
-    node: &Arc<Shared>,
+    chat: &Arc<Chat>,
     room: &mut Room,
     peer: EndpointId,
     me: Option<Member>,
     arg: &str,
 ) -> Vec<String> {
-    let host = node.host();
     let mut replies = Vec::new();
     let you = match me {
         // Already joined: `/join <nick>` with another nick renames.
         Some(me) if arg.is_empty() || arg == me.nick => me,
         Some(me) => {
-            if let Err(e) = check_nick(node, peer, arg) {
+            if let Err(e) = check_nick(chat, peer, arg) {
                 return vec![err(&e)];
             }
             let old = me.nick.clone();
@@ -273,15 +276,15 @@ fn join(
                 nick: arg.to_string(),
                 ..me
             };
-            host.set_member(&me);
-            store_and_publish(node, room, peer, LogKind::Nick, arg, &old);
+            set_member(chat, &me);
+            store_and_publish(chat, room, peer, LogKind::Nick, arg, &old);
             me
         }
         None => {
             let nick = if arg.is_empty() {
-                default_nick(node, peer)
+                default_nick(chat, peer)
             } else {
-                if let Err(e) = check_nick(node, peer, arg) {
+                if let Err(e) = check_nick(chat, peer, arg) {
                     return vec![err(&e)];
                 }
                 arg.to_string()
@@ -291,8 +294,8 @@ fn join(
                 nick,
                 joined: true,
             };
-            host.set_member(&me);
-            let stored = store_and_publish(node, room, peer, LogKind::Join, &me.nick, "");
+            set_member(chat, &me);
+            let stored = store_and_publish(chat, room, peer, LogKind::Join, &me.nick, "");
             if stored
                 .first()
                 .is_some_and(|r| r.starts_with("{\"t\":\"err\""))
@@ -302,25 +305,26 @@ fn join(
             me
         }
     };
-    replies.extend(history(&host.events_recent(HISTORY_DEFAULT)));
+    replies.extend(history(&events_recent(chat, HISTORY_DEFAULT)));
     let mut ready = String::new();
     let _ = write!(
         ready,
         "{{\"t\":\"ready\",\"room\":\"{}\",\"you\":{{\"peer\":\"{}\",\"nick\":\"",
-        node.id().to_z32(),
+        chat.ctx.id().to_z32(),
         peer.to_z32()
     );
-    protocols::json_escape_into(&mut ready, &you.nick);
-    let _ = write!(ready, "\"}},\"last_seq\":{}}}", host.room_seq());
+    json_escape_into(&mut ready, &you.nick);
+    let room_seq = chat.sql("room_seq", store::room_seq).unwrap_or(0);
+    let _ = write!(ready, "\"}},\"last_seq\":{room_seq}}}");
     replies.push(ready);
     replies
 }
 
 /// The nick a member gets when it joins without one: a previous nick if it is still free,
 /// else a prefix of its EndpointId.
-fn default_nick(node: &Shared, peer: EndpointId) -> String {
-    if let Some(m) = node.host().member(peer)
-        && check_nick(node, peer, &m.nick).is_ok()
+fn default_nick(chat: &Chat, peer: EndpointId) -> String {
+    if let Some(m) = member(chat, peer)
+        && check_nick(chat, peer, &m.nick).is_ok()
     {
         return m.nick;
     }
@@ -328,12 +332,12 @@ fn default_nick(node: &Shared, peer: EndpointId) -> String {
     let base = &z[..8];
     std::iter::once(base.to_string())
         .chain((2..).map(|i| format!("{base}-{i}")))
-        .find(|n| check_nick(node, peer, n).is_ok())
+        .find(|n| check_nick(chat, peer, n).is_ok())
         .unwrap_or_else(|| z[..NICK_MAX].to_string())
 }
 
 /// Checks that `nick` is valid and not used by another joined member.
-fn check_nick(node: &Shared, peer: EndpointId, nick: &str) -> Result<(), String> {
+fn check_nick(chat: &Chat, peer: EndpointId, nick: &str) -> Result<(), String> {
     let valid = !nick.is_empty()
         && nick.len() <= NICK_MAX
         && nick
@@ -344,9 +348,7 @@ fn check_nick(node: &Shared, peer: EndpointId, nick: &str) -> Result<(), String>
             "invalid nick: 1-{NICK_MAX} characters of A-Z a-z 0-9 _ . -"
         ));
     }
-    let taken = node
-        .host()
-        .members()
+    let taken = members(chat)
         .iter()
         .any(|m| m.peer != peer && m.nick.eq_ignore_ascii_case(nick));
     if taken {
@@ -358,21 +360,20 @@ fn check_nick(node: &Shared, peer: EndpointId, nick: &str) -> Result<(), String>
 /// Stores an event, queues it for every other joined, present member, and returns the `ok`
 /// reply.
 fn store_and_publish(
-    node: &Arc<Shared>,
+    chat: &Arc<Chat>,
     room: &mut Room,
     peer: EndpointId,
     kind: LogKind,
     nick: &str,
     text: &str,
 ) -> Vec<String> {
-    let text = protocols::truncate(text, MAX_LOG_TEXT);
-    let Some(row) = node.host().append(peer, kind, nick, text) else {
+    let Some(row) = chat.append(peer, kind, nick, text) else {
         return vec![err("storage error")];
     };
     let line = event_json(&row, false);
     let mut recipients = 0usize;
-    for m in node.host().members() {
-        if m.peer == peer || !node.has_socket(&m.peer) {
+    for m in members(chat) {
+        if m.peer == peer || !chat.ctx.has_socket(&m.peer) {
             continue;
         }
         recipients += 1;
@@ -380,7 +381,7 @@ fn store_and_publish(
         let start = matches!(queue, Entry::Vacant(_));
         queue.or_default().push(line.clone());
         if start {
-            spawn_delivery(node, m.peer);
+            spawn_delivery(chat, m.peer);
         }
     }
     info!(
@@ -398,12 +399,11 @@ fn store_and_publish(
 
 /// Starts the delivery task for `peer`.
 ///
-/// The task counts as a connection from the start, so the endpoint stays up through the batch
-/// window and the dial.
-fn spawn_delivery(node: &Arc<Shared>, peer: EndpointId) {
-    node.connection_started();
-    let n = node.clone();
-    node.spawn(async move {
+/// The endpoint stays bound while an app task runs, so it stays up through the batch window
+/// and the dial.
+fn spawn_delivery(chat: &Arc<Chat>, peer: EndpointId) {
+    let n = chat.clone();
+    chat.ctx.spawn(async move {
         n0_future::time::sleep(DELIVERY_BATCH).await;
         loop {
             let lines = {
@@ -433,56 +433,48 @@ fn spawn_delivery(node: &Arc<Shared>, peer: EndpointId) {
                 }
             });
         }
-        n.connection_ended();
     });
 }
 
 /// Writes `lines` to `peer` on one uni stream; returns whether the stream was finished, and
 /// the connection used: `open` (reused), `dial` (new) or `none` (no path).
-async fn deliver(node: &Arc<Shared>, peer: EndpointId, lines: &[String]) -> (bool, &'static str) {
+async fn deliver(chat: &Arc<Chat>, peer: EndpointId, lines: &[String]) -> (bool, &'static str) {
     let mut payload = String::new();
     for l in lines {
         payload.push_str(l);
         payload.push('\n');
     }
-    let open = node.room().conns.get(&peer).cloned();
+    let open = chat.room().conns.get(&peer).cloned();
     if let Some((conn, activity)) = open
         && conn.close_reason().is_none()
     {
         if write_uni(&conn, &activity, &payload).await {
-            node.update_stats(|s| s.delivery_reuses += 1);
+            chat.update_stats(|s| s.delivery_reuses += 1);
             return (true, "open");
         }
         debug!(peer = %peer.fmt_short(), "delivery on open connection failed, dialing");
     }
-    if !node.has_socket(&peer) {
+    if !chat.ctx.has_socket(&peer) {
         debug!(peer = %peer.fmt_short(), "delivery: no socket for peer");
         return (false, "none");
     }
-    let Some(endpoint) = node.endpoint() else {
-        return (false, "none");
-    };
-    let conn = match endpoint.connect(peer_endpoint_addr(peer), ROOM_ALPN).await {
+    let conn = match chat.ctx.connect(peer, ROOM_ALPN).await {
         Ok(c) => c,
         Err(e) => {
             warn!(peer = %peer.fmt_short(), "room: dial failed: {e:#}");
             return (false, "dial");
         }
     };
-    node.update_stats(|s| s.delivery_dials += 1);
-    let activity = Activity::new();
-    register(node, &conn, &activity);
-    node.connection_started();
-    let (n, c, a) = (node.clone(), conn.clone(), activity.clone());
-    node.spawn(async move {
-        protocols::serve(n.clone(), c, a, "out").await;
-        n.connection_ended();
-    });
+    chat.update_stats(|s| s.delivery_dials += 1);
+    let activity = chat.ctx.activity(&conn);
+    // The member may send requests on this connection too.
+    let (c, cn) = (chat.clone(), conn.clone());
+    chat.ctx.spawn(async move { serve_conn(c, cn).await });
     (write_uni(&conn, &activity, &payload).await, "dial")
 }
 
-async fn write_uni(conn: &Connection, activity: &Arc<Activity>, payload: &str) -> bool {
-    let _open = activity.stream();
+async fn write_uni(conn: &Connection, activity: &Option<Arc<Activity>>, payload: &str) -> bool {
+    let _open = activity.as_ref().map(|a| a.stream());
     let res = async {
         let mut s = conn.open_uni().await.map_err(|e| e.to_string())?;
         s.write_all(payload.as_bytes())
@@ -497,19 +489,36 @@ async fn write_uni(conn: &Connection, activity: &Arc<Activity>, payload: &str) -
     res.is_ok()
 }
 
+fn member(chat: &Chat, peer: EndpointId) -> Option<Member> {
+    chat.sql("member", |s| store::member(s, &peer)).flatten()
+}
+
+fn members(chat: &Chat) -> Vec<Member> {
+    chat.sql("members", store::members).unwrap_or_default()
+}
+
+fn set_member(chat: &Chat, m: &Member) {
+    chat.sql("set_member", |s| store::set_member(s, m, store::now_ms()));
+}
+
+fn events_recent(chat: &Chat, n: usize) -> Vec<LogRow> {
+    chat.sql("events_recent", |s| store::events_recent(s, n))
+        .unwrap_or_default()
+}
+
 fn history(rows: &[LogRow]) -> Vec<String> {
     rows.iter().map(|r| event_json(r, true)).collect()
 }
 
-fn who(node: &Shared) -> String {
+fn who(chat: &Chat) -> String {
     let mut out = String::from("{\"t\":\"who\",\"members\":[");
-    for (i, m) in node.host().members().iter().enumerate() {
+    for (i, m) in members(chat).iter().enumerate() {
         if i > 0 {
             out.push(',');
         }
         let _ = write!(out, "{{\"peer\":\"{}\",\"nick\":\"", m.peer.to_z32());
-        protocols::json_escape_into(&mut out, &m.nick);
-        let _ = write!(out, "\",\"present\":{}}}", node.has_socket(&m.peer));
+        json_escape_into(&mut out, &m.nick);
+        let _ = write!(out, "\",\"present\":{}}}", chat.ctx.has_socket(&m.peer));
     }
     out.push_str("]}");
     out
@@ -517,7 +526,7 @@ fn who(node: &Shared) -> String {
 
 fn err(text: &str) -> String {
     let mut out = String::from("{\"t\":\"err\",\"text\":\"");
-    protocols::json_escape_into(&mut out, text);
+    json_escape_into(&mut out, text);
     out.push_str("\"}");
     out
 }
@@ -532,7 +541,7 @@ fn event_json(r: &LogRow, hist: bool) -> String {
     );
     let field = |out: &mut String, name: &str, value: &str| {
         let _ = write!(out, ",\"{name}\":\"");
-        protocols::json_escape_into(out, value);
+        json_escape_into(out, value);
         out.push('"');
     };
     match r.kind.as_str() {

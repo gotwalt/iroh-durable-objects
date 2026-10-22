@@ -9,40 +9,7 @@ use iroh_base::SecretKey;
 use serde::Deserialize;
 use worker::{Result, SqlStorage, SqlStorageValue};
 
-use iroh_do_core::{LOG_MAX_AGE, LOG_RETENTION};
-
 use crate::schema;
-
-/// One row of the `log` table.
-#[derive(Debug, Deserialize)]
-pub struct LogRowSql {
-    /// Sequence number.
-    pub seq: i64,
-    /// `seq` of the previous room event; absent from queries over all records.
-    #[serde(default)]
-    pub prev: i64,
-    /// Insert time (ms since the UNIX epoch).
-    pub ts_ms: i64,
-    /// Peer z32.
-    pub peer: String,
-    /// Record kind.
-    pub kind: String,
-    /// Author's nick (room events only).
-    pub nick: String,
-    /// Payload.
-    pub text: String,
-}
-
-/// One row of the `members` table.
-#[derive(Debug, Deserialize)]
-pub struct MemberSql {
-    /// Peer z32.
-    pub peer: String,
-    /// Nick.
-    pub nick: String,
-    /// 1 if joined.
-    pub joined: i64,
-}
 
 /// The stored identity.
 pub struct Identity {
@@ -89,10 +56,12 @@ struct ValueRow {
 /// A due schedule entry.
 #[derive(Debug, Deserialize)]
 pub struct Due {
-    /// Entry key (`republish`, `callback:<z32>`, ...).
+    /// Entry key (`republish`, `sweep`, or an app key).
     pub key: String,
     /// Due time the entry was read with; [`Store::claim`] removes only this version.
     pub due_ms: f64,
+    /// The payload the entry was scheduled with.
+    pub payload: String,
 }
 
 #[derive(Deserialize)]
@@ -147,146 +116,26 @@ impl Store {
         }))
     }
 
-    /// Creates the schema if it does not exist. Only call with an identity.
+    /// Creates the library's tables and then `app`'s, if they do not exist. Only call with
+    /// an identity.
     ///
     /// There is no upgrade path: an object created with an older schema keeps it (design
     /// note 008, Storage).
-    pub fn create_schema(&self) -> Result<()> {
-        for stmt in schema::SCHEMA {
+    pub fn create_schema(&self, app: &[&str]) -> Result<()> {
+        for stmt in schema::SCHEMA.iter().chain(app) {
             self.sql.exec(stmt, None)?;
         }
         Ok(())
     }
 
-    /// Appends a log record and enforces retention; returns its `seq` and `prev`.
-    ///
-    /// A room event's `prev` is the previous room event's `seq`, and the event becomes the
-    /// new `room_seq`; other records have `prev` 0 and leave `room_seq` alone.
-    pub fn log_insert(
-        &self,
-        ts_ms: f64,
-        peer: &str,
-        kind: &str,
-        nick: &str,
-        text: &str,
-    ) -> Result<(i64, i64)> {
-        let room_event = iroh_do_core::ROOM_EVENT_KINDS.contains(&kind);
-        let prev = if room_event { self.room_seq()? } else { 0 };
-        let seq = self.value(
-            schema::LOG_INSERT,
-            Some(vec![
-                SqlStorageValue::Integer(ts_ms as i64),
-                peer.into(),
-                kind.into(),
-                nick.into(),
-                text.into(),
-                SqlStorageValue::Integer(prev),
-            ]),
-        )?;
-        if room_event {
-            self.sql
-                .exec(schema::SET_ROOM_SEQ, vec![SqlStorageValue::Integer(seq)])?;
-        }
-        // Same event as the INSERT, so they commit together.
-        self.log_prune(ts_ms)?;
-        Ok((seq, prev))
-    }
-
-    /// The newest room event's `seq`, 0 if none.
-    pub fn room_seq(&self) -> Result<i64> {
-        self.value(schema::ROOM_SEQ, None)
-    }
-
-    /// Deletes records beyond [`LOG_RETENTION`] or older than [`LOG_MAX_AGE`] at `now_ms`.
-    /// `seq` and the total stay monotonic.
-    pub fn log_prune(&self, now_ms: f64) -> Result<()> {
-        let newest = self.log_total()?;
-        self.sql.exec(
-            schema::LOG_PRUNE_COUNT,
-            vec![SqlStorageValue::Integer(newest - LOG_RETENTION as i64)],
-        )?;
-        let cutoff = SqlStorageValue::Integer(now_ms as i64 - LOG_MAX_AGE.as_millis() as i64);
-        self.sql.exec(schema::LOG_SAVE_SEQ, vec![cutoff.clone()])?;
-        self.sql.exec(schema::LOG_PRUNE_AGE, vec![cutoff])?;
-        Ok(())
+    /// The SQLite handle, for the app's [`iroh_do_core::Sql`].
+    pub fn sql(&self) -> &SqlStorage {
+        &self.sql
     }
 
     fn value(&self, sql: &str, params: Option<Vec<SqlStorageValue>>) -> Result<i64> {
         let rows: Vec<ValueRow> = self.sql.exec(sql, params)?.to_array()?;
         Ok(rows.first().map_or(0, |r| r.value))
-    }
-
-    /// Records ever inserted (`max(seq)`).
-    pub fn log_total(&self) -> Result<i64> {
-        self.value(schema::LOG_TOTAL, None)
-    }
-
-    /// Retained records of `peer`, counted on the `log_peer` index.
-    pub fn log_yours(&self, peer: &str) -> Result<i64> {
-        self.value(schema::LOG_YOURS, Some(vec![peer.into()]))
-    }
-
-    /// Distinct peers in retained records (`/count` only).
-    pub fn log_peers(&self) -> Result<i64> {
-        self.value(schema::LOG_PEERS, None)
-    }
-
-    /// Newest `n` records, oldest first.
-    pub fn log_recent(&self, n: usize) -> Result<Vec<LogRowSql>> {
-        self.sql
-            .exec(schema::LOG_RECENT, vec![SqlStorageValue::Integer(n as i64)])?
-            .to_array()
-    }
-
-    /// Up to `limit` room events after `seq`, oldest first.
-    pub fn events_after(&self, seq: i64, limit: usize) -> Result<Vec<LogRowSql>> {
-        self.sql
-            .exec(
-                &schema::events_after(),
-                vec![
-                    SqlStorageValue::Integer(seq),
-                    SqlStorageValue::Integer(limit as i64),
-                ],
-            )?
-            .to_array()
-    }
-
-    /// Newest `n` room events, oldest first.
-    pub fn events_recent(&self, n: usize) -> Result<Vec<LogRowSql>> {
-        self.sql
-            .exec(
-                &schema::events_recent(),
-                vec![SqlStorageValue::Integer(n as i64)],
-            )?
-            .to_array()
-    }
-
-    /// One member, joined or not.
-    pub fn member(&self, peer: &str) -> Result<Option<MemberSql>> {
-        let rows: Vec<MemberSql> = self
-            .sql
-            .exec(schema::MEMBER_GET, vec![peer.into()])?
-            .to_array()?;
-        Ok(rows.into_iter().next())
-    }
-
-    /// Joined members.
-    pub fn members(&self) -> Result<Vec<MemberSql>> {
-        self.sql.exec(schema::MEMBERS_JOINED, None)?.to_array()
-    }
-
-    /// Inserts or updates a member.
-    pub fn set_member(&self, peer: &str, nick: &str, joined: bool, now_ms: f64) -> Result<()> {
-        self.sql.exec(
-            schema::MEMBER_UPSERT,
-            vec![
-                peer.into(),
-                nick.into(),
-                SqlStorageValue::Integer(i64::from(joined)),
-                SqlStorageValue::Integer(now_ms as i64),
-            ],
-        )?;
-        Ok(())
     }
 
     /// Mint time of the stored identity, in ms since the UNIX epoch.
@@ -316,7 +165,7 @@ impl Store {
 
     /// Store a fresh identity. Fails if one exists (`INSERT`, not upsert).
     pub fn insert_identity(&self, id: &Identity, now_ms: f64) -> Result<()> {
-        self.create_schema()?;
+        self.create_schema(&[])?;
         let hex = data_encoding::HEXLOWER.encode(&id.secret.to_bytes());
         self.sql.exec(
             "INSERT INTO identity(k, secret_hex, relay_url, pkarr_relay, minted_at_ms) VALUES (1, ?, ?, ?, ?)",
@@ -381,7 +230,7 @@ impl Store {
     pub fn due(&self, now_ms: f64) -> Result<Vec<Due>> {
         self.sql
             .exec(
-                "SELECT key, due_ms FROM schedule WHERE due_ms <= ? ORDER BY due_ms",
+                "SELECT key, due_ms, payload FROM schedule WHERE due_ms <= ? ORDER BY due_ms",
                 vec![SqlStorageValue::Float(now_ms)],
             )?
             .to_array()
@@ -394,6 +243,13 @@ impl Store {
             "DELETE FROM schedule WHERE key = ? AND due_ms = ?",
             vec![d.key.as_str().into(), SqlStorageValue::Float(d.due_ms)],
         )?;
+        Ok(())
+    }
+
+    /// Deletes the entry for `key`, if any.
+    pub fn unschedule(&self, key: &str) -> Result<()> {
+        self.sql
+            .exec("DELETE FROM schedule WHERE key = ?", vec![key.into()])?;
         Ok(())
     }
 

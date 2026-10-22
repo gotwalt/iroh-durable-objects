@@ -1,0 +1,19 @@
+[package]
+name = "iroh-do-chat-app"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The chat room app for iroh-do: a chat room per endpoint, and diagnostic protocols"
+publish = false
+
+[dependencies]
+iroh-do-core = { path = "../../crates/iroh-do-core" }
+iroh = { workspace = true, features = ["unstable-custom-transports"] }
+n0-future = "0.3"
+serde_json = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+# Runs the schema and checks query plans natively (src/store.rs).
+rusqlite = { version = "0.37", features = ["bundled"] }

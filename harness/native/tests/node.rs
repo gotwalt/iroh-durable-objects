@@ -11,7 +11,7 @@ use iroh::{
     Endpoint, EndpointAddr, RelayMap, RelayMode,
     endpoint::{Connection, ConnectionError, RecvStream, SendStream, ZeroRttStatus, presets},
 };
-use iroh_do_core::{CTL_ALPN, ECHO_ALPN, NOTIFY_ALPN};
+use iroh_do_chat_app::{CTL_ALPN, ChatApp, ChatStats, ECHO_ALPN, NOTIFY_ALPN, store};
 use iroh_do_harness::{DoObject, Harness, State, Timings};
 use tokio::time::{Instant, sleep, timeout};
 
@@ -128,7 +128,7 @@ impl Ctl {
 async fn echo_round_trip() {
     init_tracing();
     let h = Harness::start().await.unwrap();
-    let obj = h.mint(Timings::default());
+    let obj = h.mint::<ChatApp>(Timings::default());
     let ep = peer(vec![]).await;
     let t0 = Instant::now();
     let conn = ep
@@ -152,7 +152,7 @@ async fn echo_round_trip() {
 async fn ctl_status_and_unprompted_uni() {
     init_tracing();
     let h = Harness::start().await.unwrap();
-    let obj = h.mint(Timings::default());
+    let obj = h.mint::<ChatApp>(Timings::default());
     let ep = peer(vec![]).await;
     let mut ctl = Ctl::open(&ep, addr(&h, &obj)).await;
     assert_eq!(
@@ -183,7 +183,8 @@ async fn ctl_status_and_unprompted_uni() {
     assert_eq!(st["bundle"], iroh_do_harness::BUNDLE[..12]);
     assert!(st["since_wake_ms"].as_u64().is_some());
     let keys: Vec<_> = st.as_object().unwrap().keys().cloned().collect();
-    assert_eq!(keys.len(), 10, "{keys:?}");
+    assert_eq!(keys.len(), 11, "{keys:?}");
+    assert_eq!(st["app"], "chat");
     assert_eq!(
         (st["members"].clone(), st["present"].clone()),
         (0.into(), 0.into())
@@ -204,7 +205,7 @@ async fn ctl_status_and_unprompted_uni() {
 async fn three_sessions_rebuild_endpoint() {
     init_tracing();
     let h = Harness::start().await.unwrap();
-    let obj = h.mint(Timings::default());
+    let obj = h.mint::<ChatApp>(Timings::default());
     let ep = peer(vec![]).await;
     for i in 1..=3u64 {
         let t0 = Instant::now();
@@ -229,7 +230,7 @@ async fn three_sessions_rebuild_endpoint() {
 async fn app_idle_close_then_warm() {
     init_tracing();
     let h = Harness::start().await.unwrap();
-    let obj = h.mint(Timings::default()); // t_idle = 10 s
+    let obj = h.mint::<ChatApp>(Timings::default()); // t_idle = 10 s
     let ep = peer(vec![]).await;
     let conn = ep.connect(addr(&h, &obj), ECHO_ALPN).await.unwrap();
     echo_once(&conn, b"x").await;
@@ -262,7 +263,7 @@ async fn app_idle_close_then_warm() {
 async fn silent_open_stream_is_closed() {
     init_tracing();
     let h = Harness::start().await.unwrap();
-    let obj = h.mint(Timings {
+    let obj = h.mint::<ChatApp>(Timings {
         t_silent: Duration::from_secs(3),
         ..Timings::default()
     });
@@ -295,7 +296,7 @@ async fn silent_open_stream_is_closed() {
 async fn hibernation_between_sessions() {
     init_tracing();
     let h = Harness::start().await.unwrap();
-    let obj = h.mint(Timings::default());
+    let obj = h.mint::<ChatApp>(Timings::default());
     let ep = peer(vec![]).await;
     let mut ctl = Ctl::open(&ep, addr(&h, &obj)).await;
     assert_eq!(ctl.status().await["wakes"], 1);
@@ -332,7 +333,7 @@ async fn hibernation_between_sessions() {
 async fn message_log_persists_across_hibernation() {
     init_tracing();
     let h = Harness::start().await.unwrap();
-    let obj = h.mint(Timings::default());
+    let obj = h.mint::<ChatApp>(Timings::default());
     let ep = peer(vec![]).await;
     let mut ctl = Ctl::open(&ep, addr(&h, &obj)).await;
     assert_eq!(ctl.line("one").await, "echo: one (#1, total 1, yours 1)");
@@ -347,7 +348,7 @@ async fn message_log_persists_across_hibernation() {
     ctl.close();
     assert_warm_and_quiet(&obj, Duration::from_secs(10)).await;
     obj.hibernate().expect("hibernatable");
-    assert_eq!(obj.log_total(), 2);
+    assert_eq!(obj.with_sql(|s| store::log_total(s).unwrap()), 2);
 
     let mut ctl = Ctl::open(&ep, addr(&h, &obj)).await;
     let st = ctl.status().await;
@@ -386,7 +387,7 @@ async fn message_log_persists_across_hibernation() {
 async fn dial_back_after_warm_and_hibernation() {
     init_tracing();
     let h = Harness::start().await.unwrap();
-    let obj = h.mint(Timings::default());
+    let obj = h.mint::<ChatApp>(Timings::default());
     let ep = peer(vec![NOTIFY_ALPN.to_vec()]).await;
     let mut ctl = Ctl::open(&ep, addr(&h, &obj)).await;
     let delay = 5u64;
@@ -423,7 +424,7 @@ async fn dial_back_after_warm_and_hibernation() {
          delivered {delivered:?} (wakes={wakes})"
     );
     assert_warm_and_quiet(&obj, Duration::from_secs(10)).await;
-    let s = obj.node().unwrap().stats();
+    let s = chat_stats(&obj);
     assert_eq!((s.dial_backs_ok, s.dial_backs_failed), (1, 0));
     ep.close().await;
 }
@@ -441,7 +442,7 @@ async fn abrupt_restart_documented() {
         max_idle_timeout: Duration::from_secs(10),
         ..Timings::default()
     };
-    let obj = h.mint(timings);
+    let obj = h.mint::<ChatApp>(timings);
     let ep = peer(vec![]).await;
     let mut ctl = Ctl::open(&ep, addr(&h, &obj)).await;
     assert_eq!(
@@ -482,7 +483,7 @@ async fn abrupt_restart_documented() {
 async fn zero_rtt_documented() {
     init_tracing();
     let h = Harness::start().await.unwrap();
-    let obj = h.mint(Timings::default());
+    let obj = h.mint::<ChatApp>(Timings::default());
     let ep = peer(vec![]).await;
     let a = addr(&h, &obj);
 
@@ -521,4 +522,11 @@ async fn zero_rtt_documented() {
     let r3 = session(&ep, a.clone()).await;
     println!("0-RTT: #1 fresh: {r1}; #2 same Active period: {r2}; #3 after Warm cycle: {r3}");
     ep.close().await;
+}
+
+/// The chat app's counters.
+#[allow(dead_code)]
+fn chat_stats(obj: &iroh_do_harness::DoObject) -> ChatStats {
+    obj.with_app(|a: &ChatApp| a.stats())
+        .expect("live chat app")
 }

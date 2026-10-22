@@ -1,5 +1,5 @@
-//! A runtime-agnostic iroh node for a Durable Object: endpoint lifecycle, the demo chat room,
-//! diagnostic protocols and dial-back.
+//! A runtime-agnostic iroh node for a Durable Object: the endpoint lifecycle, and the
+//! protocol handlers of an [`App`].
 //!
 //! A [`Node`] owns at most one iroh [`Endpoint`], whose only transport is
 //! [`iroh_ingress_transport`]. The node does not speak the relay protocol, hold sockets or
@@ -9,19 +9,24 @@
 //!   for every socket restored after hibernation.
 //! - [`Node::datagrams`] for each relay datagram frame addressed to the object.
 //! - [`Node::socket_closed`] when a peer's relay socket closes.
-//! - [`Node::dial_back`] when a callback the node requested through
-//!   [`Host::schedule_callback`] is due.
+//! - [`Node::alarm`] when work scheduled through [`Host::schedule`] is due.
 //!
 //! The node calls back into the host through [`Host`]: outgoing frames through its
-//! [`FrameSink`] supertrait, callback scheduling, the message log and the room's members.
-//! These methods are synchronous. Apart from frame output they run once per application event
-//! (a room request, a ctl line, an echo stream, a dial-back), never per packet, so a host can
-//! back them with synchronous storage.
+//! [`FrameSink`] supertrait, scheduling, and the object's SQL database. These methods are
+//! synchronous. Apart from frame output they run once per application event, never per
+//! packet, so a host can back them with synchronous storage.
 //!
 //! `Host` is `Send + Sync` because iroh requires those bounds of a custom transport's sender.
 //! A Durable Object runs on a single thread and its runtime handles are not `Send`; a wasm32
 //! host meets the bounds by keeping those handles in a thread-local and storing only a key in
 //! the `Host` value.
+//!
+//! # Apps
+//!
+//! The node hosts one [`App`], chosen by the host. On every activation the app registers
+//! iroh [`ProtocolHandler`](iroh::protocol::ProtocolHandler)s by ALPN in [`Protocols`], and
+//! the node dispatches accepted connections to them as iroh's `Router` does. The app reaches
+//! the node through [`Ctx`]: SQL, scheduling, the peers it can dial, and dialing.
 //!
 //! # Lifecycle
 //!
@@ -32,22 +37,22 @@
 //!   The host may hibernate the object.
 //! - [`State::Active`]: the endpoint is binding, bound or closing.
 //!
-//! The first datagram or a dial-back moves the node to Active. Binding is asynchronous;
-//! frames that arrive meanwhile wait in a FIFO bounded by [`Config::preactivation_queue`],
-//! and frames beyond the bound are dropped. Once no connection has existed for
-//! [`Config::t_linger`], the node closes and drops the endpoint, returns to Warm or Cold, and
-//! records how many of its tasks outlived the endpoint in [`Stats::teardown_leftover_tasks`].
-//! Work that arrives while the endpoint is closing activates it again.
+//! The first datagram or a [`Ctx::connect`] moves the node to Active. Binding is
+//! asynchronous; frames that arrive meanwhile wait in a FIFO bounded by
+//! [`Config::preactivation_queue`], and frames beyond the bound are dropped. The endpoint
+//! stays bound while a connection is open or an app task spawned with [`Ctx::spawn`] runs.
+//! Once neither has existed for [`Config::t_linger`], the node closes and drops the endpoint,
+//! returns to Warm or Cold, and records how many of its tasks outlived the endpoint in
+//! [`Stats::teardown_leftover_tasks`]. Work that arrives while the endpoint is closing
+//! activates it again.
 //!
 //! # Idle connections
 //!
 //! QUIC's idle timeout never fires here: iroh 1.4.0 sends a keep-alive on every path every
 //! 5 s, its public API cannot disable that, and stock peers do the same. The node therefore
-//! closes connections itself, with application error code 0:
-//!
-//! - after [`Config::t_idle`] with no open streams and no application bytes (reason `idle`);
-//! - after [`Config::t_silent`] with streams open but no application bytes (reason
-//!   `silent`), so a peer cannot keep the object Active by holding a stream open.
+//! closes connections itself, with application error code 0, once they carry no application
+//! data for their idle limit ([`Config::t_idle`] unless the app set one with
+//! [`Protocols::accept_with`]). See [`Activity`] for how activity is observed.
 //!
 //! The endpoint still advertises [`Config::max_idle_timeout`]. It bounds how long a peer waits
 //! on a connection whose object was evicted before it learns the connection is gone.
@@ -58,39 +63,20 @@
 //! every event method must be called from within a tokio runtime. On wasm32 it is
 //! `wasm_bindgen_futures::spawn_local`, and the Durable Object's thread runs the tasks between
 //! events.
-//!
-//! # Protocols
-//!
-//! The endpoint accepts [`ROOM_ALPN`], [`CTL_ALPN`] and [`ECHO_ALPN`], and dials peers with
-//! [`ROOM_ALPN`] and [`NOTIFY_ALPN`]. `docs/design-notes/008-chat-room.md` defines the room;
-//! `006-crates-and-demo-protocols.md` and `007-durable-message-log.md` define the others, which
-//! exist to exercise the lifecycle.
-//!
-//! # The room
-//!
-//! Members do not hold connections, so that the object can hibernate between messages. A
-//! member opens a connection to send a request, and the node opens one to deliver events,
-//! each reusing an open connection to the other side if there is one. Both kinds close after
-//! [`Config::t_idle`] like any other connection, and the endpoint is dropped
-//! [`Config::t_linger`] later.
-//!
-//! A member is present while it has an authenticated relay socket to the object: that socket
-//! is the only path the node can dial. The node delivers each new event to every joined,
-//! present member except its author, batching events produced within [`DELIVERY_BATCH`] on
-//! one unidirectional stream. A failed delivery is not retried; members catch up with
-//! `/since`.
 #![deny(missing_docs)]
 
+mod app;
+mod conn;
+mod ctx;
 mod endpoint;
-mod protocols;
-mod room;
+mod sql;
 
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     fmt,
     future::Future,
     sync::{
-        Arc, Mutex, MutexGuard,
+        Arc, Mutex, MutexGuard, OnceLock,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
@@ -102,26 +88,16 @@ pub use iroh::{EndpointId, SecretKey};
 pub use iroh_ingress_transport::FrameSink;
 use iroh_ingress_transport::IngressTransport;
 use n0_future::time::Instant;
+use tokio::sync::oneshot;
 use tracing::{Instrument, Span, debug, error, info, info_span, warn};
 
-/// ALPN of the echo protocol: each bi stream is echoed back.
-pub const ECHO_ALPN: &[u8] = b"iroh-do/echo/1";
-/// ALPN of the chat room: requests on member-opened bi streams, deliveries on node-opened
-/// uni streams.
-pub const ROOM_ALPN: &[u8] = b"iroh-do/room/1";
-/// ALPN of the diagnostic protocol: one reply line per request line, plus `/status`,
-/// `/count`, `/log` and `/callback`.
-pub const CTL_ALPN: &[u8] = b"iroh-do/ctl/1";
-/// ALPN the node dials a peer with for a dial-back.
-pub const NOTIFY_ALPN: &[u8] = b"iroh-do/notify/1";
-/// Largest delay, in seconds, a peer may request with `/callback`.
-///
-/// A dial-back needs the peer's relay socket, and iroh's relay client closes a socket to a
-/// relay other than its home relay 60 s after its last send.
-pub const MAX_CALLBACK_SECS: u64 = 50;
-/// How long the node collects new room events for one member before opening a delivery
-/// stream.
-pub const DELIVERY_BATCH: Duration = Duration::from_millis(50);
+use crate::{app::Registered, conn::Activity as ConnActivity};
+pub use crate::{
+    app::{App, AppEntry, DynApp, Idle, Protocols},
+    conn::{Activity, CLOSE_OK, StreamGuard},
+    ctx::{APP_KEY_PREFIX, ConnectError, Ctx},
+    sql::{Row, Sql, SqlError, Value},
+};
 
 /// Node configuration.
 pub struct Config {
@@ -129,23 +105,23 @@ pub struct Config {
     pub secret_key: SecretKey,
     /// Times the host has constructed this object, persisted by the host.
     ///
-    /// Reported by `/status` and in the dial-back line; an increase shows the object was
-    /// evicted or hibernated in between.
+    /// Reported in the status; an increase shows the object was evicted or hibernated in
+    /// between.
     pub wakes: u64,
     /// Endpoints bound before this node was created, persisted by the host through
     /// [`Host::endpoint_built`].
     ///
-    /// `/status` reports this plus the node's own builds, so the count survives hibernation.
+    /// The status reports this plus the node's own builds, so the count survives hibernation.
     pub endpoint_builds: u64,
-    /// Build identifier, such as the bundle's SHA-256; `/status` reports its first 12
+    /// Build identifier, such as the bundle's SHA-256; the status reports its first 12
     /// characters.
     pub bundle: String,
-    /// Time without open streams or application bytes after which a connection is closed.
+    /// Default time without application data after which a connection is closed.
     pub t_idle: Duration,
-    /// Time without application bytes after which a connection is closed even while it has
-    /// open streams.
+    /// Time without application data after which a connection is closed while a handler
+    /// reports an open stream through [`Activity::stream`].
     pub t_silent: Duration,
-    /// Time without connections after which the endpoint is closed.
+    /// Time without connections or app tasks after which the endpoint is closed.
     pub t_linger: Duration,
     /// QUIC `max_idle_timeout` the endpoint advertises.
     pub max_idle_timeout: Duration,
@@ -197,182 +173,25 @@ impl fmt::Debug for Config {
     }
 }
 
-/// Services the node needs from its host: frame output, dial-back scheduling, the message log
-/// and the room's members.
+/// Services the node needs from its host: frame output, scheduling and SQL.
 pub trait Host: FrameSink {
-    /// Schedules a dial-back to `peer` after `delay`.
-    ///
-    /// The host persists the request, arms an alarm, and when it fires calls
-    /// [`Node::dial_back`], possibly on a new node created after hibernation.
-    fn schedule_callback(&self, peer: EndpointId, delay: Duration);
+    /// Persists work under `key`, due after `delay`, replacing any pending work with the same
+    /// key, and arms an alarm. When it is due the host calls [`Node::alarm`] with `key` and
+    /// `payload`, possibly on a new node created after hibernation.
+    fn schedule(&self, key: &str, delay: Duration, payload: &str);
+
+    /// Deletes pending work under `key`.
+    fn cancel(&self, key: &str);
+
+    /// Calls `f` with the object's database, or does not call it if the object has none
+    /// any more.
+    fn with_sql(&self, f: &mut dyn FnMut(&dyn Sql));
 
     /// Called each time the node binds an endpoint.
     ///
     /// A host that persists the count passes it back as [`Config::endpoint_builds`].
     fn endpoint_built(&self) {}
-
-    /// Appends a record with an empty nick to the message log and returns its sequence number
-    /// and the running totals.
-    ///
-    /// The node has already truncated `text` to [`MAX_LOG_TEXT`] bytes.
-    fn log_event(&self, peer: EndpointId, kind: LogKind, text: &str) -> LogStats;
-
-    /// Appends a room event to the message log and returns the stored record, or `None` if it
-    /// could not be stored.
-    ///
-    /// The record's `prev` is [`Host::room_seq`] before the append.
-    ///
-    /// For [`LogKind::Nick`], `nick` is the new nick and `text` the old one; for
-    /// [`LogKind::Part`], `text` is the reason.
-    fn append(&self, peer: EndpointId, kind: LogKind, nick: &str, text: &str) -> Option<LogRow>;
-
-    /// Returns the `seq` of the newest room event ever stored, 0 if none.
-    ///
-    /// Unaffected by retention: it is the `prev` of the next room event.
-    fn room_seq(&self) -> u64;
-
-    /// Returns up to `limit` room events with a sequence number above `seq`, oldest first.
-    fn events_after(&self, seq: u64, limit: usize) -> Vec<LogRow>;
-
-    /// Returns the newest `n` room events, oldest first.
-    fn events_recent(&self, n: usize) -> Vec<LogRow>;
-
-    /// Returns the stored member record of `peer`, joined or not.
-    fn member(&self, peer: EndpointId) -> Option<Member>;
-
-    /// Returns the joined members.
-    fn members(&self) -> Vec<Member>;
-
-    /// Inserts or replaces the member record of `member.peer`.
-    fn set_member(&self, member: &Member);
-
-    /// Returns the message log's totals, counting `peer`'s own records.
-    fn count(&self, peer: EndpointId) -> Counts;
-
-    /// Returns the number of records ever inserted, as in [`Counts::total`].
-    ///
-    /// Callers that need only the total (`/status`, the dial-back line) use this to spare the
-    /// host the per-peer counts.
-    fn total(&self) -> u64;
-
-    /// Returns the newest `n` records, oldest first.
-    fn recent(&self, n: usize) -> Vec<LogRow>;
 }
-
-/// Kind of a message-log record.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LogKind {
-    /// A room message (`/say`).
-    Msg,
-    /// A room action (`/me`).
-    Act,
-    /// A member joined the room.
-    Join,
-    /// A member left the room (`/quit`).
-    Part,
-    /// A member changed its nick.
-    Nick,
-    /// A request line on [`CTL_ALPN`].
-    Ctl,
-    /// An echo stream.
-    Echo,
-    /// A dial-back attempt.
-    Callback,
-}
-
-impl LogKind {
-    /// Returns the name stored in a record's `kind` field.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            LogKind::Msg => "msg",
-            LogKind::Act => "act",
-            LogKind::Join => "join",
-            LogKind::Part => "part",
-            LogKind::Nick => "nick",
-            LogKind::Ctl => "ctl",
-            LogKind::Echo => "echo",
-            LogKind::Callback => "callback",
-        }
-    }
-
-    /// Returns whether records of this kind are room events.
-    pub fn is_room_event(self) -> bool {
-        matches!(
-            self,
-            LogKind::Msg | LogKind::Act | LogKind::Join | LogKind::Part | LogKind::Nick
-        )
-    }
-}
-
-/// Kinds of room events, as stored in a record's `kind` field.
-pub const ROOM_EVENT_KINDS: [&str; 5] = ["msg", "act", "join", "part", "nick"];
-
-/// A member of the room.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Member {
-    /// The member's EndpointId.
-    pub peer: EndpointId,
-    /// Its nick: 1–24 characters of `[A-Za-z0-9_.-]`, unique among joined members ignoring
-    /// ASCII case.
-    pub nick: String,
-    /// Whether it is joined. A member that sent `/quit` keeps its record, not joined.
-    pub joined: bool,
-}
-
-/// Result of [`Host::log_event`].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct LogStats {
-    /// Sequence number of the inserted record.
-    pub seq: u64,
-    /// Records ever inserted; unaffected by retention.
-    pub total: u64,
-    /// Retained records from the same peer.
-    pub yours: u64,
-}
-
-/// Result of [`Host::count`].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Counts {
-    /// Records ever inserted.
-    pub total: u64,
-    /// Retained records from the asking peer.
-    pub yours: u64,
-    /// Distinct peers in retained records.
-    pub peers: u64,
-}
-
-/// One message-log record.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LogRow {
-    /// Sequence number.
-    pub seq: u64,
-    /// For a room event, the `seq` of the room event before it (0 if none); 0 for other
-    /// records.
-    ///
-    /// Room events share `seq` with the diagnostic records, so consecutive room events need
-    /// not have consecutive numbers. `prev` lets a member that last saw room event `L` tell a
-    /// missed event (`prev > L`) from a diagnostic record in between.
-    pub prev: u64,
-    /// Insert time in milliseconds since the UNIX epoch.
-    pub ts_ms: u64,
-    /// The peer's EndpointId, z-base-32.
-    pub peer: String,
-    /// One of [`LogKind::as_str`].
-    pub kind: String,
-    /// The author's nick for room events (the new nick for `nick`), empty otherwise.
-    pub nick: String,
-    /// The message for `msg` and `act`, the reason for `part`, the old nick for `nick`, the
-    /// request line for `ctl`, `"<n> bytes"` for `echo`, and `"delivered"` or
-    /// `"failed: <reason>"` for `callback`.
-    pub text: String,
-}
-
-/// Longest record text stored in the log, in bytes.
-pub const MAX_LOG_TEXT: usize = 1024;
-/// Records a host retains; older ones are deleted on insert.
-pub const LOG_RETENTION: u64 = 10_000;
-/// Age after which a host deletes a record, on insert and at least daily.
-pub const LOG_MAX_AGE: Duration = Duration::from_secs(14 * 24 * 3600);
 
 /// Lifecycle state of a node; see the [crate docs](crate#lifecycle).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -386,7 +205,8 @@ pub enum State {
 }
 
 impl State {
-    fn as_str(self) -> &'static str {
+    /// Returns the state's name.
+    pub fn as_str(self) -> &'static str {
         match self {
             State::Cold => "Cold",
             State::Warm => "Warm",
@@ -402,7 +222,7 @@ pub struct Stats {
     pub endpoint_builds: u64,
     /// Endpoint teardowns completed.
     pub endpoint_closes: u64,
-    /// Open connections, including handshakes in progress and dial-backs.
+    /// Open connections, accepted and dialed.
     pub connections: usize,
     /// Node tasks currently alive. Every node timer runs inside a node task.
     pub tasks: usize,
@@ -414,20 +234,6 @@ pub struct Stats {
     pub idle_closes: u64,
     /// Datagram frames dropped because the pre-activation queue was full.
     pub preactivation_dropped: u64,
-    /// Dial-backs whose notify stream was delivered.
-    pub dial_backs_ok: u64,
-    /// Dial-backs that failed: no socket, bind, connect or stream error.
-    pub dial_backs_failed: u64,
-    /// Room delivery streams written to members.
-    pub deliveries_ok: u64,
-    /// Room delivery streams that failed: no socket, connect or stream error.
-    pub deliveries_failed: u64,
-    /// Connections the node dialed to deliver room events.
-    pub delivery_dials: u64,
-    /// Delivery streams opened on a connection that was already open.
-    pub delivery_reuses: u64,
-    /// Room requests refused by the rate limit.
-    pub rate_limited: u64,
 }
 
 /// An iroh endpoint node driven by host events.
@@ -445,12 +251,15 @@ struct Datagrams {
     segment_size: Option<usize>,
 }
 
+type Handlers = Arc<HashMap<Vec<u8>, Registered>>;
+
 enum Phase {
     Idle,
     Activating,
     Active {
         endpoint: Endpoint,
         transport: IngressTransport,
+        handlers: Handlers,
     },
     Deactivating,
 }
@@ -464,8 +273,14 @@ struct Inner {
     active_since: Option<Instant>,
     sockets: HashSet<EndpointId>,
     queue: VecDeque<Datagrams>,
-    pending_dials: Vec<EndpointId>,
+    /// Dials waiting for the endpoint to bind.
+    waiters: Vec<oneshot::Sender<Result<Endpoint, String>>>,
+    /// Open connections, handshakes in progress, pending dials and app tasks. The endpoint
+    /// lingers only when this is 0.
+    busy: usize,
     linger_epoch: u64,
+    /// Idle limits by ALPN, from the last activation's [`Protocols`].
+    idle_limits: HashMap<Vec<u8>, Duration>,
     stats: Stats,
 }
 
@@ -473,10 +288,12 @@ pub(crate) struct Shared {
     config: Config,
     id: EndpointId,
     host: Arc<dyn Host>,
+    ctx: Ctx,
+    app: OnceLock<Arc<dyn DynApp>>,
     created: Instant,
     tasks: AtomicUsize,
     inner: Mutex<Inner>,
-    room: Mutex<room::Room>,
+    activities: Mutex<HashMap<usize, Arc<ConnActivity>>>,
     /// Parent of every node task, carrying `endpoint` (z-base-32) into their events.
     span: Span,
 }
@@ -491,40 +308,58 @@ impl fmt::Debug for Shared {
 }
 
 impl Node {
-    /// Creates a node in the Cold state.
+    /// Creates a node in the Cold state, running the app `app`.
     ///
     /// After hibernation, call [`Node::socket_authenticated`] for every restored socket.
-    pub fn new(config: Config, host: Arc<dyn Host>) -> Self {
+    pub fn new(config: Config, host: Arc<dyn Host>, app: &AppEntry) -> Self {
         let id = config.secret_key.public();
         let span = info_span!("node", endpoint = %id.to_z32());
-        debug!(parent: &span, wakes = config.wakes, "node created");
-        Self {
-            shared: Arc::new(Shared {
-                config,
-                id,
-                host,
-                created: Instant::now(),
-                tasks: AtomicUsize::new(0),
-                inner: Mutex::new(Inner {
-                    phase: Phase::Idle,
-                    state: State::Cold,
-                    state_since: Instant::now(),
-                    active_since: None,
-                    sockets: HashSet::new(),
-                    queue: VecDeque::new(),
-                    pending_dials: Vec::new(),
-                    linger_epoch: 0,
-                    stats: Stats::default(),
-                }),
-                room: Mutex::new(room::Room::default()),
-                span,
+        debug!(parent: &span, wakes = config.wakes, app = app.name, "node created");
+        let shared = Arc::new_cyclic(|weak| Shared {
+            config,
+            id,
+            host,
+            ctx: Ctx::new(id, weak.clone()),
+            app: OnceLock::new(),
+            created: Instant::now(),
+            tasks: AtomicUsize::new(0),
+            inner: Mutex::new(Inner {
+                phase: Phase::Idle,
+                state: State::Cold,
+                state_since: Instant::now(),
+                active_since: None,
+                sockets: HashSet::new(),
+                queue: VecDeque::new(),
+                waiters: Vec::new(),
+                busy: 0,
+                linger_epoch: 0,
+                idle_limits: HashMap::new(),
+                stats: Stats::default(),
             }),
-        }
+            activities: Mutex::new(HashMap::new()),
+            span,
+        });
+        let built = {
+            let _span = shared.span.enter();
+            (app.new)(&shared.ctx)
+        };
+        let _ = shared.app.set(built);
+        Self { shared }
     }
 
     /// Returns the node's EndpointId.
     pub fn id(&self) -> EndpointId {
         self.shared.id
+    }
+
+    /// Returns the app's handle to this node.
+    pub fn ctx(&self) -> Ctx {
+        self.shared.ctx.clone()
+    }
+
+    /// Returns the app, for downcasting with [`DynApp::as_any`].
+    pub fn app(&self) -> Option<&Arc<dyn DynApp>> {
+        self.shared.app.get()
     }
 
     /// Records that `peer` has an authenticated relay socket.
@@ -537,7 +372,7 @@ impl Node {
 
     /// Records that `peer` no longer has a relay socket.
     ///
-    /// Later dial-backs to `peer` fail without activating the endpoint.
+    /// Later dials to `peer` fail without activating the endpoint.
     pub fn socket_closed(&self, peer: EndpointId) {
         let _span = self.shared.span.enter();
         let mut inner = self.shared.lock();
@@ -577,32 +412,18 @@ impl Node {
         self.shared.activate_locked(&mut inner);
     }
 
-    /// Dials `peer` with [`NOTIFY_ALPN`] over its relay socket, activating the endpoint if
-    /// needed.
+    /// Runs work scheduled through [`Host::schedule`] that is now due.
     ///
-    /// If `peer` has no authenticated socket the dial-back fails at once. Every attempt is
-    /// logged through [`Host::log_event`] and counted in [`Stats`].
-    pub fn dial_back(&self, peer: EndpointId) {
+    /// Keys the node gave the host for the app carry [`APP_KEY_PREFIX`]; the app sees them
+    /// without it. Other keys are ignored.
+    pub fn alarm(&self, key: &str, payload: &str) {
         let _span = self.shared.span.enter();
-        let mut inner = self.shared.lock();
-        if !inner.sockets.contains(&peer) {
-            warn!(
-                event = "dial_back",
-                peer = %peer.to_z32(),
-                ok = false,
-                error = "no socket for peer",
-            );
-            inner.stats.dial_backs_failed += 1;
-            drop(inner);
-            protocols::log_callback(&self.shared, peer, "failed: no socket for peer");
+        let Some(key) = key.strip_prefix(APP_KEY_PREFIX) else {
+            warn!(key, "alarm for a key the node did not schedule");
             return;
-        }
-        if let Phase::Active { endpoint, .. } = &inner.phase {
-            let endpoint = endpoint.clone();
-            self.shared.start_dial_locked(&mut inner, endpoint, peer);
-        } else {
-            inner.pending_dials.push(peer);
-            self.shared.activate_locked(&mut inner);
+        };
+        if let Some(app) = self.shared.app.get() {
+            app.on_alarm(&self.shared.ctx, key, payload);
         }
     }
 
@@ -616,21 +437,26 @@ impl Node {
         self.shared.stats()
     }
 
-    /// Returns the reply to `/status` on [`CTL_ALPN`]: one line of JSON with the state,
-    /// counters, records, joined members and present members.
+    /// Returns the endpoint's status: the node's fields (`id`, `app`, `state`, `wakes`,
+    /// `endpoint_builds`, `connections`, `bundle`, `since_wake_ms`) and the app's.
+    pub fn status(&self) -> serde_json::Value {
+        self.shared.status()
+    }
+
+    /// Returns [`Node::status`] as one line of JSON.
     pub fn status_json(&self) -> String {
-        protocols::status_json(&self.shared)
+        self.shared.status().to_string()
     }
 }
 
 /// `Send` on native targets (tokio's `spawn`), nothing on wasm (`spawn_local`).
 #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
-pub(crate) trait MaybeSend: Send {}
+pub trait MaybeSend: Send {}
 #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 impl<T: Send> MaybeSend for T {}
 /// `Send` on native targets (tokio's `spawn`), nothing on wasm (`spawn_local`).
 #[cfg(all(target_family = "wasm", target_os = "unknown"))]
-pub(crate) trait MaybeSend {}
+pub trait MaybeSend {}
 #[cfg(all(target_family = "wasm", target_os = "unknown"))]
 impl<T> MaybeSend for T {}
 
@@ -643,9 +469,26 @@ impl Drop for TaskGuard {
     }
 }
 
+/// Keeps the endpoint bound until dropped; see [`Inner::busy`].
+pub(crate) struct Busy(Arc<Shared>);
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        let mut inner = self.0.lock();
+        inner.busy = inner.busy.saturating_sub(1);
+        if inner.busy == 0 && matches!(inner.phase, Phase::Active { .. }) {
+            self.0.start_linger_locked(&mut inner);
+        }
+    }
+}
+
 impl Shared {
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(crate) fn activities(&self) -> MutexGuard<'_, HashMap<usize, Arc<ConnActivity>>> {
+        self.activities.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub(crate) fn state(&self) -> State {
@@ -662,33 +505,50 @@ impl Shared {
         &self.config
     }
 
-    pub(crate) fn id(&self) -> EndpointId {
-        self.id
-    }
-
     pub(crate) fn host(&self) -> &Arc<dyn Host> {
         &self.host
     }
 
-    pub(crate) fn since_wake(&self) -> Duration {
-        self.created.elapsed()
-    }
-
-    pub(crate) fn room(&self) -> MutexGuard<'_, room::Room> {
-        self.room.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// Returns whether `peer` has an authenticated relay socket.
     pub(crate) fn has_socket(&self, peer: &EndpointId) -> bool {
         self.lock().sockets.contains(peer)
     }
 
-    /// Returns the endpoint if it is bound.
-    pub(crate) fn endpoint(&self) -> Option<Endpoint> {
-        match &self.lock().phase {
-            Phase::Active { endpoint, .. } => Some(endpoint.clone()),
-            _ => None,
+    pub(crate) fn peers(&self) -> Vec<EndpointId> {
+        self.lock().sockets.iter().copied().collect()
+    }
+
+    pub(crate) fn idle_limit(&self, alpn: &[u8]) -> Duration {
+        self.lock()
+            .idle_limits
+            .get(alpn)
+            .copied()
+            .unwrap_or(self.config.t_idle)
+    }
+
+    pub(crate) fn status(&self) -> serde_json::Value {
+        let stats = self.stats();
+        let bundle: String = self.config.bundle.chars().take(12).collect();
+        let mut out = serde_json::Map::new();
+        out.insert("id".into(), self.id.to_z32().into());
+        if let Some(app) = self.app.get() {
+            out.insert("app".into(), app.name().into());
         }
+        out.insert("state".into(), self.state().as_str().into());
+        out.insert("wakes".into(), self.config.wakes.into());
+        out.insert(
+            "endpoint_builds".into(),
+            (self.config.endpoint_builds + stats.endpoint_builds).into(),
+        );
+        out.insert("connections".into(), stats.connections.into());
+        out.insert("bundle".into(), bundle.into());
+        out.insert(
+            "since_wake_ms".into(),
+            (self.created.elapsed().as_millis() as u64).into(),
+        );
+        if let Some(app) = self.app.get() {
+            out.extend(app.status(&self.ctx));
+        }
+        out.into()
     }
 
     /// Spawns a counted node task.
@@ -704,6 +564,46 @@ impl Shared {
         ));
     }
 
+    /// Keeps the endpoint bound until the returned guard is dropped.
+    pub(crate) fn busy(self: &Arc<Self>) -> Busy {
+        let mut inner = self.lock();
+        inner.busy += 1;
+        inner.linger_epoch += 1;
+        Busy(self.clone())
+    }
+
+    pub(crate) fn connection_opened(&self) {
+        self.lock().stats.connections += 1;
+    }
+
+    pub(crate) fn connection_closed(&self) {
+        let mut inner = self.lock();
+        inner.stats.connections = inner.stats.connections.saturating_sub(1);
+    }
+
+    pub(crate) fn record_idle_close(&self) {
+        self.lock().stats.idle_closes += 1;
+    }
+
+    /// Returns the bound endpoint, binding it first if needed.
+    pub(crate) async fn endpoint_ready(self: &Arc<Self>) -> Result<Endpoint, ConnectError> {
+        let rx = {
+            let mut inner = self.lock();
+            if let Phase::Active { endpoint, .. } = &inner.phase {
+                return Ok(endpoint.clone());
+            }
+            let (tx, rx) = oneshot::channel();
+            inner.waiters.push(tx);
+            self.activate_locked(&mut inner);
+            rx
+        };
+        match rx.await {
+            Ok(Ok(endpoint)) => Ok(endpoint),
+            Ok(Err(e)) => Err(ConnectError::Bind(e)),
+            Err(_) => Err(ConnectError::Gone),
+        }
+    }
+
     /// Starts binding the endpoint unless it is binding, bound or closing. A closing endpoint
     /// activates again on its own if work is queued.
     fn activate_locked(self: &Arc<Self>, inner: &mut Inner) {
@@ -717,9 +617,20 @@ impl Shared {
     }
 
     async fn activate(self: Arc<Self>) {
+        let mut protocols = Protocols::default();
+        if let Some(app) = self.app.get() {
+            app.protocols(&self.ctx, &mut protocols);
+        }
+        let alpns = protocols.alpns();
+        let idle_limits: HashMap<_, _> = protocols
+            .map
+            .iter()
+            .filter_map(|(alpn, r)| r.idle.map(|i| (alpn.clone(), i.0)))
+            .collect();
+        let handlers: Handlers = Arc::new(protocols.map);
         let transport = IngressTransport::new(self.id, self.host.clone());
         let started = Instant::now();
-        let res = endpoint::bind(&self.config, transport.clone()).await;
+        let res = endpoint::bind(&self.config, transport.clone(), alpns).await;
         let ms = started.elapsed().as_millis() as u64;
         let mut inner = self.lock();
         let endpoint = match res {
@@ -734,18 +645,15 @@ impl Shared {
                 inner.phase = Phase::Idle;
                 self.note_state_locked(&mut inner);
                 inner.queue.clear();
-                let failed: Vec<_> = inner.pending_dials.drain(..).collect();
-                inner.stats.dial_backs_failed += failed.len() as u64;
-                drop(inner);
-                let outcome = format!("failed: endpoint bind failed: {e}");
-                for peer in failed {
-                    protocols::log_callback(&self, peer, &outcome);
+                for w in inner.waiters.drain(..) {
+                    let _ = w.send(Err(e.to_string()));
                 }
                 return;
             }
         };
         inner.stats.endpoint_builds += 1;
         inner.active_since = Some(Instant::now());
+        inner.idle_limits = idle_limits;
         self.host.endpoint_built();
         info!(
             event = "endpoint_bind",
@@ -753,7 +661,7 @@ impl Shared {
             ms,
             builds = inner.stats.endpoint_builds,
             queued = inner.queue.len(),
-            dials = inner.pending_dials.len(),
+            dials = inner.waiters.len(),
         );
         for d in inner.queue.drain(..) {
             transport.push_datagrams(d.from, d.ecn, d.contents, d.segment_size);
@@ -761,74 +669,26 @@ impl Shared {
         inner.phase = Phase::Active {
             endpoint: endpoint.clone(),
             transport,
+            handlers: handlers.clone(),
         };
         let this = self.clone();
         let ep = endpoint.clone();
-        self.spawn(async move { this.accept_loop(ep).await });
-        let dials: Vec<_> = inner.pending_dials.drain(..).collect();
-        for peer in dials {
-            self.start_dial_locked(&mut inner, endpoint.clone(), peer);
+        self.spawn(async move { this.accept_loop(ep, handlers).await });
+        for w in inner.waiters.drain(..) {
+            let _ = w.send(Ok(endpoint.clone()));
         }
-        if inner.stats.connections == 0 {
+        if inner.busy == 0 {
             self.start_linger_locked(&mut inner);
         }
     }
 
-    async fn accept_loop(self: Arc<Self>, endpoint: Endpoint) {
+    async fn accept_loop(self: Arc<Self>, endpoint: Endpoint, handlers: Handlers) {
         while let Some(incoming) = endpoint.accept().await {
-            self.connection_started();
             let this = self.clone();
-            self.spawn(async move {
-                protocols::handle_incoming(this.clone(), incoming).await;
-                this.connection_ended();
-            });
+            let handlers = handlers.clone();
+            self.spawn(async move { this.handle_incoming(incoming, handlers).await });
         }
         debug!("accept loop ended");
-    }
-
-    fn start_dial_locked(
-        self: &Arc<Self>,
-        inner: &mut Inner,
-        endpoint: Endpoint,
-        peer: EndpointId,
-    ) {
-        inner.stats.connections += 1;
-        inner.linger_epoch += 1;
-        let this = self.clone();
-        self.spawn(async move {
-            let ok = protocols::dial_notify(&this, &endpoint, peer).await;
-            {
-                let mut inner = this.lock();
-                if ok {
-                    inner.stats.dial_backs_ok += 1;
-                } else {
-                    inner.stats.dial_backs_failed += 1;
-                }
-            }
-            this.connection_ended();
-        });
-    }
-
-    pub(crate) fn connection_started(&self) {
-        let mut inner = self.lock();
-        inner.stats.connections += 1;
-        inner.linger_epoch += 1;
-    }
-
-    pub(crate) fn connection_ended(self: &Arc<Self>) {
-        let mut inner = self.lock();
-        inner.stats.connections = inner.stats.connections.saturating_sub(1);
-        if inner.stats.connections == 0 && matches!(inner.phase, Phase::Active { .. }) {
-            self.start_linger_locked(&mut inner);
-        }
-    }
-
-    pub(crate) fn record_idle_close(&self) {
-        self.lock().stats.idle_closes += 1;
-    }
-
-    pub(crate) fn update_stats(&self, f: impl FnOnce(&mut Stats)) {
-        f(&mut self.lock().stats);
     }
 
     fn start_linger_locked(self: &Arc<Self>, inner: &mut Inner) {
@@ -841,20 +701,21 @@ impl Shared {
         });
     }
 
-    /// Closes and drops the endpoint unless a connection started since `epoch`.
+    /// Closes and drops the endpoint unless the node became busy since `epoch`.
     async fn linger_expired(self: Arc<Self>, epoch: u64) {
-        let endpoint = {
+        let (endpoint, handlers) = {
             let mut inner = self.lock();
-            if inner.linger_epoch != epoch || inner.stats.connections != 0 {
+            if inner.linger_epoch != epoch || inner.busy != 0 {
                 return;
             }
             match std::mem::replace(&mut inner.phase, Phase::Deactivating) {
                 Phase::Active {
                     endpoint,
                     transport,
+                    handlers,
                 } => {
                     drop(transport);
-                    endpoint
+                    (endpoint, handlers)
                 }
                 other => {
                     inner.phase = other;
@@ -862,9 +723,12 @@ impl Shared {
                 }
             }
         };
-        debug!("no connections for t_linger: closing endpoint");
-        self.room().clear_connections();
+        debug!("idle for t_linger: closing endpoint");
         let started = Instant::now();
+        for r in handlers.values() {
+            r.handler.shutdown().await;
+        }
+        drop(handlers);
         endpoint.close().await;
         drop(endpoint);
         let leftover = self.wait_for_tasks().await;
@@ -884,7 +748,7 @@ impl Shared {
         inner.stats.endpoint_closes += 1;
         inner.stats.teardown_leftover_tasks = Some(leftover);
         inner.phase = Phase::Idle;
-        if !inner.queue.is_empty() || !inner.pending_dials.is_empty() {
+        if !inner.queue.is_empty() || !inner.waiters.is_empty() {
             debug!("work arrived while closing: re-activating");
             self.activate_locked(&mut inner);
         } else {
