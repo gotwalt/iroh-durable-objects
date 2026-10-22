@@ -273,7 +273,9 @@ object finishes its own. Several streams may be open on a connection.
 Lines are at most `MAX_LINE` = 4096 bytes. A line that is longer, not UTF-8, or
 cannot be read gets one reply line `error: line too long`, `error: line is not
 utf-8` or `error: <read error>`; the object then stops reading that stream and
-finishes it, so the peer must open a new stream.
+finishes it, so the peer must open a new stream. A request the object fails to
+handle, for example because its storage fails, gets `error: <reason>` and ends the
+stream the same way.
 
 **Unprompted line.** After it has written the first reply on a connection, the
 object opens one unidirectional stream on that connection and writes

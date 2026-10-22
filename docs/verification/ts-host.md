@@ -584,8 +584,8 @@ rewritten class:
 - Storage failures are not turned into defaults. The Rust app logs `chat_sql_failed` and
   goes on with an empty result or 0. The class answers a room request whose write was
   rolled back with `storage error` and logs `room_request_failed` with the cause; a ctl
-  request whose storage fails ends its stream, and the rejection is logged as
-  `task_failed` with its stack. A member row and the event that goes with it (`join`,
+  request whose storage fails gets `error: <reason>`, its stream ends, and the cause is
+  logged as `ctl_request_failed`. A member row and the event that goes with it (`join`,
   `nick`, `part`) are written in one transaction, so a failure leaves neither. Once an
   event is stored the reply is `ok`: a failure to queue it for delivery is logged as
   `room_queue_failed`, since a member told `storage error` would send it again.

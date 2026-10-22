@@ -9,6 +9,7 @@ export type EventName =
   | "room_request"
   | "room_request_failed"
   | "room_queue_failed"
+  | "ctl_request_failed"
   | "room_event"
   | "room_delivery"
   | "room_dial_failed"

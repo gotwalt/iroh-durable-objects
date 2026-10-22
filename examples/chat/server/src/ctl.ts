@@ -65,7 +65,18 @@ export class Ctl {
         return;
       }
       if (line === null) break;
-      if (!(await write(stream.send, `${encodeCtlReply(this.#respond(peer, line))}\n`))) return;
+      let reply: string;
+      try {
+        reply = encodeCtlReply(this.#respond(peer, line));
+      } catch (error) {
+        rethrowTrap(error);
+        // In practice storage. Answered like a line that cannot be read: one error line, and
+        // the stream ends.
+        this.#log.error("ctl_request_failed", { peer, error: errorText(error) });
+        if (await write(stream.send, `error: ${errorText(error)}\n`)) await finish(stream.send);
+        return;
+      }
+      if (!(await write(stream.send, `${reply}\n`))) return;
       afterFirstReply();
     }
     await finish(stream.send);
