@@ -109,15 +109,50 @@ P5 currently reads: "Protocol logic (relay handshake, framing, lifecycle) is a
 pure state machine with explicit `now` and explicit I/O, testable natively
 with no Cloudflare dependency. Runtime glue is thin."
 
-Under this design the glue is TypeScript and is the product surface, not thin.
-The principle's substance holds: protocol logic stays in Rust, sans-io and
-tested natively. Proposed wording:
+The wording needs two corrections.
 
-> **P5. Sans-io first.** Protocol logic (relay handshake, framing, lifecycle)
-> is a pure state machine with explicit `now` and explicit I/O, testable
-> natively with no Cloudflare dependency. The platform host (TypeScript) holds
-> no protocol logic: it moves bytes, persists what the Rust side asks for, and
-> exposes the platform to apps.
+- **The glue is no longer thin.** Under this design it is TypeScript and is
+  the product surface.
+- **Explicit `now` holds for less than P5 claims, and this is already true
+  before this change.** Only the ingress takes `now` from its host.
+  - noq, inside iroh, reads the clock through n0-future and arms its own
+    `setTimeout` timers. iroh 1.4.0 has no hook to inject either.
+  - `iroh-do-core` also reads the clock directly: the linger sleeps with
+    `n0_future::time::sleep` (`src/lib.rs`), and the idle close samples
+    `Instant::now()` (`src/conn.rs`).
+  - This is correct only for the two reasons given in `design.md` § Time:
+    1. Cloudflare's clock, which advances only between events, matches how
+       noq samples `now`.
+    2. No QUIC connection survives a suspension, because pending timers keep
+       the object from hibernating.
+
+Proposed wording:
+
+> **P5. Sans-io first.** The relay ingress (handshake, framing, session) is a
+> pure state machine with explicit `now` and explicit I/O, testable natively
+> with no Cloudflare dependency. The iroh endpoint and the node's lifecycle read
+> the platform clock; `design.md` § Time states why that clock is sufficient.
+> The platform host (TypeScript) holds no protocol logic: it moves bytes,
+> persists what the Rust side asks for, and exposes the platform to apps.
+
+### Upstream: a host-provided QUIC clock
+
+[iroh#4459](https://github.com/n0-computer/iroh/issues/4459) proposes an
+unstable endpoint-level time source: a host-provided `now()` and a sleep future
+for a deadline. Its draft implementation is
+[iroh#4466](https://github.com/n0-computer/iroh/pull/4466) (open and unreviewed
+on 2026-10-22). If a release includes it, the TypeScript host can supply iroh's
+clock. The host would read `Date.now()` at each event and arm one timeout for
+the earliest QUIC deadline. That would make explicit `now` hold for the endpoint
+too, and would replace the `setTimeout` round-up described in `design.md` §
+Time. Until then this repository uses stock iroh 1.4.0 (P7, AGENTS.md).
+
+The proposer reports QUIC stalling after a carrier interruption in deployed
+Workers. That has not been seen here. The case that would expose this design
+to such a stall is production evicting an object while a connection is open,
+for example for a code update or under memory pressure. That has not been
+tested in production. The peer would then reconnect to a fresh object, so the
+connection is dropped rather than left stalled.
 
 ## Consequences
 
