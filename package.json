@@ -4,7 +4,9 @@
   "description": "npm workspaces of the TypeScript host (design note 013): the iroh-do package and the apps built on it. One lockfile, here.",
   "workspaces": [
     "packages/iroh-do",
-    "examples/echo/server"
+    "examples/echo/server",
+    "examples/chat/server",
+    "examples/ts-deployment"
   ],
   "devDependencies": {
     "miniflare": "5.20260908.0-alpha",
