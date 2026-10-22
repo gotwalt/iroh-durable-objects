@@ -16,5 +16,8 @@
     "lint": "biome check .",
     "format": "biome check --write .",
     "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.4.0"
   }
 }
