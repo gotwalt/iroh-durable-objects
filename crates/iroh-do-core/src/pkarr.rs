@@ -35,14 +35,25 @@ pub struct PublishRequest {
     pub timestamp_us: u64,
 }
 
-/// Errors building a record.
+/// Errors building a record, with the underlying error's message.
 #[derive(Debug)]
 pub enum BuildError {
     /// The relay URL did not parse.
-    RelayUrl,
+    RelayUrl(String),
     /// iroh-dns refused to encode the packet.
-    Encode,
+    Encode(String),
 }
+
+impl std::fmt::Display for BuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BuildError::RelayUrl(e) => write!(f, "relay URL: {e}"),
+            BuildError::Encode(e) => write!(f, "encoding the signed packet: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for BuildError {}
 
 /// Builds the relay-only record for `secret` pointing at `relay_url`.
 pub fn build_publish(
@@ -50,11 +61,13 @@ pub fn build_publish(
     relay_url: &str,
     pkarr_relay: &str,
 ) -> Result<PublishRequest, BuildError> {
-    let relay: RelayUrl = relay_url.parse().map_err(|_| BuildError::RelayUrl)?;
+    let relay: RelayUrl = relay_url
+        .parse()
+        .map_err(|e| BuildError::RelayUrl(format!("{e}")))?;
     let pkt = EndpointInfo::new(secret.public())
         .with_relay_url(relay)
         .to_pkarr_signed_packet(secret, PKARR_TTL_SECS)
-        .map_err(|_| BuildError::Encode)?;
+        .map_err(|e| BuildError::Encode(format!("{e}")))?;
     Ok(PublishRequest {
         url: format!(
             "{}/{}",
@@ -98,5 +111,14 @@ mod tests {
         assert!(!confirm(&sk, &req.body, req.timestamp_us, "https://other/"));
         let other = SecretKey::from_bytes(&[4u8; 32]);
         assert!(!confirm(&other, &req.body, 0, &relay));
+    }
+
+    #[test]
+    fn build_error_keeps_the_cause() {
+        let sk = SecretKey::from_bytes(&[3u8; 32]);
+        let e = build_publish(&sk, "not a url", "https://dns.iroh.link/pkarr").unwrap_err();
+        assert!(matches!(e, BuildError::RelayUrl(_)));
+        assert!(e.to_string().starts_with("relay URL: "), "{e}");
+        assert!(e.to_string().len() > "relay URL: ".len(), "{e}");
     }
 }

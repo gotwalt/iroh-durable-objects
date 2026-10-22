@@ -264,3 +264,57 @@ impl Shared {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const IDLE: Duration = Duration::from_secs(10);
+    const SILENT: Duration = Duration::from_secs(60);
+
+    /// Guards count toward the connection and the node until dropped, and stop counting once
+    /// the connection has closed, also guards dropped or taken later.
+    #[test]
+    fn guards_stop_counting_once_the_connection_closes() {
+        let node = Arc::new(AtomicUsize::new(0));
+        let a = Activity::new(node.clone());
+        assert_eq!(a.close_deadline(IDLE, SILENT).1, "idle");
+        let g1 = a.stream();
+        let g2 = a.stream();
+        assert_eq!(node.load(Ordering::SeqCst), 2);
+        assert_eq!(a.close_deadline(IDLE, SILENT).1, "silent");
+        drop(g1);
+        assert_eq!(node.load(Ordering::SeqCst), 1);
+        assert_eq!(a.close_deadline(IDLE, SILENT).1, "silent");
+
+        a.release();
+        assert_eq!(node.load(Ordering::SeqCst), 0);
+        assert_eq!(a.close_deadline(IDLE, SILENT).1, "idle");
+        // A guard held past the close, as a JavaScript stream object may be, must not
+        // underflow the node count when it is finally dropped.
+        drop(g2);
+        assert_eq!(node.load(Ordering::SeqCst), 0);
+        let g3 = a.stream();
+        assert_eq!(node.load(Ordering::SeqCst), 0);
+        assert_eq!(a.close_deadline(IDLE, SILENT).1, "idle");
+        drop(g3);
+        assert_eq!(node.load(Ordering::SeqCst), 0);
+        a.release();
+        assert_eq!(node.load(Ordering::SeqCst), 0);
+    }
+
+    /// Two connections share the node count; closing one releases only its own streams.
+    #[test]
+    fn node_count_spans_connections() {
+        let node = Arc::new(AtomicUsize::new(0));
+        let a = Activity::new(node.clone());
+        let b = Activity::new(node.clone());
+        let _ga = a.stream();
+        let _gb1 = b.stream();
+        let _gb2 = b.stream();
+        assert_eq!(node.load(Ordering::SeqCst), 3);
+        b.release();
+        assert_eq!(node.load(Ordering::SeqCst), 1);
+        assert_eq!(a.close_deadline(IDLE, SILENT).1, "silent");
+    }
+}
