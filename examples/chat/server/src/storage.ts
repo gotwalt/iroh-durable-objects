@@ -90,6 +90,10 @@ const SCHEMA = [
      text TEXT NOT NULL,
      prev INTEGER NOT NULL DEFAULT 0)`,
   "CREATE INDEX IF NOT EXISTS log_peer ON log(peer)",
+  // The room events among the records, for `/join`, `/history` and `/since`, which would
+  // otherwise scan the diagnostic records too: up to the whole log when it holds few room
+  // events. SQLite uses a partial index for a query whose WHERE repeats the index's term.
+  `CREATE INDEX IF NOT EXISTS log_room ON log(seq) WHERE kind IN ${ROOM_KINDS_SQL}`,
   "CREATE TABLE IF NOT EXISTS log_meta(name TEXT PRIMARY KEY, value INTEGER NOT NULL)",
   `CREATE TABLE IF NOT EXISTS members(
      peer TEXT PRIMARY KEY,
