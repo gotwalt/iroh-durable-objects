@@ -304,8 +304,8 @@ the retained records of the asking peer, `P` the distinct peers among retained
 records.
 
 **`/log [n]`.** `n` defaults to `ctl_log_default` = 5; the argument must be a
-number, else `error: usage /log [n], n <= 50`; a value above 50 is 50. The reply is the newest `n` retained records of every
-kind (room events included), oldest first, as
+number, else `error: usage /log [n], n <= 50`; a value above 50 is 50. The reply
+is the newest `n` retained records of every kind (room events included), oldest first, as
 `{"seq":int,"ts_ms":int,"peer":"<z32>","kind":"…","text":"…"}`. `kind` is `ctl`,
 `echo`, `callback`, `msg`, `act`, `join`, `part` or `nick`. `text` is the line
 for `ctl`, `"<n> bytes"` for `echo`, `delivered` or `failed: <reason>` for
@@ -315,7 +315,7 @@ reason for `part`, and the old nick for `nick`.
 **`/status`.** A JSON object with these keys: `id` (the object's id), `app`
 (`"chat"`), `state` (`"Active"` while answering), `wakes`, `endpoint_builds`,
 `connections` (integers), `bundle` (string, a build identifier), `since_wake_ms`
-(integer), `records` (integer, rows in the log), `members` (joined members) and
+(integer), `records` (integer, the records ever written: `/count`'s `T`), `members` (joined members) and
 `present` (those with an open relay socket). Which host runs the object decides
 the values of `wakes`, `endpoint_builds`, `connections`, `bundle` and
 `since_wake_ms`; the others are defined by the chat app.
@@ -344,8 +344,8 @@ with this ALPN, opens one unidirectional stream, writes
 callback from <E z32> wakes=<N> records=<T>\n
 ```
 
-and finishes it (`N`: the object's wake count; `T`: records in the log when the
-line is written). It then waits up to 5 s for the peer to close the connection and
+and finishes it (`N`: the object's wake count; `T`: the records ever written, as
+`/count`'s `T`, when the line is written). It then waits up to 5 s for the peer to close the connection and
 closes it. If the dial or the write fails, nothing is delivered. Either way a
 record of kind `callback` is stored with text `delivered` or `failed: <reason>`.
 The object writes it once the attempt has ended, so it appears in `/log` after
@@ -423,4 +423,5 @@ change.
 | Integers on the wire | Unbounded `u64` | At most 2^53 − 1 | Every JSON reader holds them exactly; a JavaScript number cannot hold every `u64` |
 | JSON string escapes | Exactly `"`, `\`, and characters below U+0020 as `\u00XX` | Any escape JSON allows; nothing above U+007F escaped | Lets a server use its language's JSON encoder; readers already had to accept any encoding |
 | Byte order mark | Unspecified: Rust keeps a leading U+FEFF, a default JavaScript `TextDecoder` drops it | A leading U+FEFF is part of the line | So that implementations agree; keeping it is what a strict decoder does |
+| `records` in `/status`, `T` of the notify line | "rows in the log", "records in the log" | The records ever written, `/count`'s `T` | A correction: both servers have always reported this number, which differs from the row count once the log is pruned |
 | Nick comparison | "ASCII case-insensitively" | Case-insensitively; nicks are ASCII, so this equates `A`-`Z` with `a`-`z` only | Same behavior, stated as the rule rather than as an implementation |
