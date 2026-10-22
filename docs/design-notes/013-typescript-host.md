@@ -1,8 +1,8 @@
 # 013: TypeScript owns the Durable Object; Rust is a wasm library
 
 **Status:** proposed (2026-10-22). Replaces the app API of 011 and the glue
-layout of 011 and 012. Rewords P5 in `spec.md` §1, which needs review.
-Evidence: `docs/verification/ts-host.md`.
+layout of 011 and 012. Narrows P5's explicit-clock claim in `spec.md` §1,
+which needs review. Evidence: `docs/verification/ts-host.md`.
 
 iroh-do is a feasibility study. This change keeps no compatibility with the
 current deployment.
@@ -120,22 +120,26 @@ P5 currently reads: "Protocol logic (relay handshake, framing, lifecycle) is a
 pure state machine with explicit `now` and explicit I/O, testable natively
 with no Cloudflare dependency. Runtime glue is thin."
 
-The wording needs two corrections.
+"Runtime glue is thin" still holds. The boundary between Rust and the
+platform is narrower than before: Rust takes socket ids, bytes and snapshot
+strings, and returns frames through one callback. The TypeScript class is not
+glue in this sense. It is the platform layer, written as Cloudflare documents
+it, and it is what lets app authors write Durable Objects without crossing the
+Rust/TypeScript boundary themselves.
 
-- **The glue is no longer thin.** Under this design it is TypeScript and is
-  the product surface.
-- **Explicit `now` holds for less than P5 claims, and this is already true
-  before this change.** Only the ingress takes `now` from its host.
-  - noq, inside iroh, reads the clock through n0-future and arms its own
-    `setTimeout` timers. iroh 1.4.0 has no hook to inject either.
-  - `iroh-do-core` also reads the clock directly: the linger sleeps with
-    `n0_future::time::sleep` (`src/lib.rs`), and the idle close samples
-    `Instant::now()` (`src/conn.rs`).
-  - This is correct only for the two reasons given in `design.md` § Time:
-    1. Cloudflare's clock, which advances only between events, matches how
-       noq samples `now`.
-    2. No QUIC connection survives a suspension, because pending timers keep
-       the object from hibernating.
+One correction is needed, and it is true before this change too: **explicit
+`now` holds only for the ingress.**
+
+- noq, inside iroh, reads the clock through n0-future and arms its own
+  `setTimeout` timers. iroh 1.4.0 has no hook to inject either.
+- `iroh-do-core` also reads the clock directly: the linger sleeps with
+  `n0_future::time::sleep` (`src/lib.rs`), and the idle close samples
+  `Instant::now()` (`src/conn.rs`).
+- This is correct only for the two reasons given in `design.md` § Time:
+  1. Cloudflare's clock, which advances only between events, matches how noq
+     samples `now`.
+  2. No QUIC connection survives a suspension, because pending timers keep the
+     object from hibernating.
 
 Proposed wording:
 
@@ -143,8 +147,7 @@ Proposed wording:
 > pure state machine with explicit `now` and explicit I/O, testable natively
 > with no Cloudflare dependency. The iroh endpoint and the node's lifecycle read
 > the platform clock; `design.md` § Time states why that clock is sufficient.
-> The platform host (TypeScript) holds no protocol logic: it moves bytes,
-> persists what the Rust side asks for, and exposes the platform to apps.
+> Runtime glue is thin.
 
 ### Upstream: a host-provided QUIC clock
 
