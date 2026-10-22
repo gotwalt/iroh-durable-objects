@@ -4,11 +4,17 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Spike (spikes/ts-host): iroh-do's node, ingress and iroh streams as a wasm-bindgen library for a TypeScript Durable Object"
+description = "iroh-do's node, relay ingress and iroh streams as a wasm-bindgen library for the TypeScript package packages/iroh-do"
 publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
+
+[features]
+# Exports `testPanic` for the panic-recovery test (packages/iroh-do/test). Never enabled in a
+# production build: packages/iroh-do/build-wasm.sh enables it only with --test-panic, and the
+# bundle manifest refuses a build that has it.
+test-panic = []
 
 # Everything is wasm32-only; natively the crate is empty so that workspace builds still pass.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

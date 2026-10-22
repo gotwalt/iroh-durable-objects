@@ -1,24 +1,36 @@
-//! The TypeScript app as an `iroh_do_core::App`: one iroh `ProtocolHandler` per ALPN that the
-//! object's `protocols()` returned, each calling the host's `accept`.
+//! The TypeScript object's protocols as an `iroh_do_core::App`: one handler per ALPN that the
+//! object's `protocols()` returned, each calling `NodeHost.accept`.
+//!
+//! # Connection lifetime
+//!
+//! Under iroh's `Router`, returning from `ProtocolHandler::accept` drops the connection, and
+//! dropping the last handle closes it. Here JavaScript holds a handle in the `Connection`
+//! wrapper until the garbage collector frees it, at an unspecified time. The handler therefore
+//! closes the connection itself, with code 0 and reason `done`, when the promise returned by
+//! the app's `accept` settles, whether it resolves or rejects. A handler that keeps using the
+//! connection keeps its promise pending, for example until `conn.closed()`.
+//!
+//! Connections the app dials with `Endpoint.connect` have no such scope. They stay open
+//! until the app or the peer closes them, or the node's idle close does
+//! (`iroh_do_core::conn`).
 
-use std::{
-    future::Future,
-    pin::Pin,
-    task::{Context, Poll},
-};
+use std::future::Future;
 
 use iroh::{
     EndpointId,
     endpoint::Connection,
-    protocol::{AcceptError, ProtocolHandler},
+    protocol::AcceptError,
 };
-use iroh_do_core::{App, Ctx, Idle, Protocols};
+use iroh_do_core::{App, Ctx, Idle, LocalProtocolHandler, Protocols};
 use wasm_bindgen_futures::JsFuture;
 
 use crate::host;
 
-/// The app of every object built by this library. Its protocols come from the object's
-/// state in [`host`], which the TypeScript constructor filled in.
+/// Reason of the close when the handler's promise settles.
+const REASON_DONE: &str = "done";
+
+/// The app of every node this library builds. Its protocols come from the object's entry in
+/// [`host`], which `WasmNode::new` filled in from `NodeOptions.protocols`.
 pub(crate) struct JsApp {
     ctx: Ctx,
 }
@@ -39,10 +51,7 @@ impl App for JsApp {
                 ctx: self.ctx.clone(),
                 alpn: alpn.clone(),
             };
-            match idle {
-                Some(d) => p.accept_with(alpn, h, Idle::after(d)),
-                None => p.accept(alpn, h),
-            };
+            p.accept_local(alpn, h, idle.map(Idle::after));
         }
     }
 }
@@ -61,25 +70,26 @@ impl std::fmt::Debug for JsHandler {
     }
 }
 
-impl ProtocolHandler for JsHandler {
-    fn accept(&self, conn: Connection) -> impl Future<Output = Result<(), AcceptError>> + Send {
+impl LocalProtocolHandler for JsHandler {
+    fn accept(&self, conn: Connection) -> impl Future<Output = Result<(), AcceptError>> {
         let id = self.id;
         let alpn = String::from_utf8_lossy(&self.alpn).into_owned();
         let activity = self.ctx.activity(&conn);
-        // iroh requires `Send`; awaiting a JS promise is not. See `AssertSend`.
-        AssertSend(async move {
+        async move {
             let Some(h) = host::host(&id) else {
                 return Ok(());
             };
-            let js_conn = crate::streams::Connection::new(conn, activity);
-            let promise = h
-                .accept(&alpn, js_conn)
-                .map_err(|e| AcceptError::from_err(JsErr(format!("{e:?}"))))?;
-            JsFuture::from(promise)
-                .await
-                .map_err(|e| AcceptError::from_err(JsErr(format!("{e:?}"))))?;
-            Ok(())
-        })
+            let js_conn = crate::streams::Connection::new(conn.clone(), activity.clone());
+            let res = match h.accept(&alpn, js_conn) {
+                Ok(promise) => JsFuture::from(promise).await.map(drop),
+                Err(e) => Err(e),
+            };
+            match &activity {
+                Some(a) => a.close(&conn, REASON_DONE),
+                None => conn.close(iroh_do_core::CLOSE_OK, REASON_DONE.as_bytes()),
+            }
+            res.map_err(|e| AcceptError::from_err(JsErr(format!("{e:?}"))))
+        }
     }
 }
 
@@ -93,22 +103,3 @@ impl std::fmt::Display for JsErr {
 }
 
 impl std::error::Error for JsErr {}
-
-/// Declares a future `Send`.
-///
-/// iroh's `ProtocolHandler::accept` returns a `Send` future on every target, but a future
-/// holding a JS promise is not `Send`. wasm32-unknown-unknown without the atomics feature has
-/// exactly one thread, so the future is never moved to another thread. (The node itself spawns
-/// with `spawn_local` on wasm, which needs no `Send`; the bound comes from iroh's trait.)
-struct AssertSend<F>(F);
-
-// SAFETY: this crate builds only for wasm32 without threads (see `lib.rs`).
-unsafe impl<F> Send for AssertSend<F> {}
-
-impl<F: Future> Future for AssertSend<F> {
-    type Output = F::Output;
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
-        // SAFETY: structural pinning of the only field.
-        unsafe { self.map_unchecked_mut(|s| &mut s.0) }.poll(cx)
-    }
-}

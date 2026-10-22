@@ -2,9 +2,9 @@
 //! state that the node's `Send + Sync` callbacks reach through a thread-local.
 //!
 //! `iroh_do_core::Host` (and iroh's custom transport sender below it) must be `Send + Sync`;
-//! JS values are neither. wasm32 has one thread, so, as in the workers-rs host, the
-//! `Host` value carries only the local EndpointId and looks everything else up here. Several
-//! objects can share an isolate, hence the map.
+//! JavaScript values are neither. wasm32 has one thread, so, as in the workers-rs host, the
+//! `Host` value carries only the local EndpointId and looks everything else up here. The
+//! objects of one isolate share its wasm instance, hence the map.
 
 use std::{cell::RefCell, collections::HashMap, io, num::NonZeroU16, time::Duration};
 
@@ -21,12 +21,14 @@ export interface NodeHost {
   sendFrame(sid: string, frame: Uint8Array): void;
   /** Runs the app's handler for an accepted connection; the promise settles when it is done. */
   accept(alpn: string, conn: Connection): Promise<void>;
-  /** Persists work under `key`, due in `delayMs`, and arms the alarm (Rust apps only). */
+  /** Persists work under `key`, due in `delayMs`, and arms the alarm. Only Rust apps schedule. */
   schedule(key: string, delayMs: number, payload: string): void;
   /** Deletes work under `key`. */
   cancel(key: string): void;
   /** Called each time the node binds an endpoint. */
   endpointBuilt(): void;
+  /** Called each time the node has closed its endpoint after t_linger. */
+  endpointClosed(): void;
 }
 "#;
 
@@ -53,6 +55,9 @@ extern "C" {
 
     #[wasm_bindgen(method, catch, js_name = endpointBuilt)]
     fn endpoint_built(this: &NodeHost) -> Result<(), JsValue>;
+
+    #[wasm_bindgen(method, catch, js_name = endpointClosed)]
+    fn endpoint_closed(this: &NodeHost) -> Result<(), JsValue>;
 }
 
 /// One object's state in this isolate.
@@ -73,6 +78,11 @@ thread_local! {
 /// Replaces the state of `id` (a new object instance for the same endpoint).
 pub(crate) fn install(id: EndpointId, entry: Entry) {
     ENTRIES.with(|e| e.borrow_mut().insert(id, entry));
+}
+
+/// Forgets the state of `id`.
+pub(crate) fn remove(id: &EndpointId) {
+    ENTRIES.with(|e| e.borrow_mut().remove(id));
 }
 
 /// Runs `f` on the state of `id`. `f` must not call into JS that can re-enter wasm.
@@ -137,17 +147,29 @@ impl Host for JsHost {
     }
 
     fn cancel(&self, key: &str) {
-        if let Some(h) = host(&self.local) {
-            let _ = h.cancel(key);
+        if let Some(h) = host(&self.local)
+            && let Err(e) = h.cancel(key)
+        {
+            tracing::error!(event = "schedule_failed", error = ?e);
         }
     }
 
-    /// TypeScript apps use `ctx.storage.sql` directly; only Rust apps would need this.
+    /// TypeScript apps use `ctx.storage.sql` directly. No Rust app runs on this host.
     fn with_sql(&self, _f: &mut dyn FnMut(&dyn Sql)) {}
 
     fn endpoint_built(&self) {
-        if let Some(h) = host(&self.local) {
-            let _ = h.endpoint_built();
+        if let Some(h) = host(&self.local)
+            && let Err(e) = h.endpoint_built()
+        {
+            tracing::error!(event = "host_callback_failed", callback = "endpointBuilt", error = ?e);
+        }
+    }
+
+    fn endpoint_closed(&self) {
+        if let Some(h) = host(&self.local)
+            && let Err(e) = h.endpoint_closed()
+        {
+            tracing::error!(event = "host_callback_failed", callback = "endpointClosed", error = ?e);
         }
     }
 }

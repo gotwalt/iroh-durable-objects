@@ -7,8 +7,10 @@
 //! its end or was stopped. While a stream is open the node closes the connection only after
 //! `t_silent` without data; otherwise after `t_idle` (`iroh_do_core::conn`).
 //!
-//! A half that JavaScript drops without finishing stays open until the wrapper is
-//! garbage-collected: wasm-bindgen frees exported objects through a `FinalizationRegistry`.
+//! A half that JavaScript abandons without finishing stops counting when its connection
+//! closes (`iroh_do_core::conn`), not when the garbage collector frees the wrapper, which
+//! happens at an unspecified time through wasm-bindgen's `FinalizationRegistry`. An accepted
+//! connection closes when its handler's promise settles (`app.rs`).
 
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -243,6 +245,19 @@ impl SendStream {
             this.open.done();
             res.map_err(js_err)?;
             Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    /// Waits until the peer has received all data (resolves with null) or stopped the stream
+    /// (resolves with its error code).
+    #[wasm_bindgen(unchecked_return_type = "Promise<number | null>")]
+    pub fn stopped(&self) -> Promise {
+        let this = self.clone();
+        future_to_promise(async move {
+            // Not under the lock: `stopped` must not block writes on the same half.
+            let stopped = this.inner.lock().await.stopped();
+            let code = stopped.await.map_err(js_err)?;
+            Ok(code.map_or(JsValue::NULL, |c| JsValue::from_f64(c.into_inner() as f64)))
         })
     }
 

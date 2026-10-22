@@ -192,7 +192,19 @@ impl WasmNode {
         self.node.stats().tasks
     }
 
-    /// Runs Rust-app work scheduled through `NodeHost.schedule`.
+    /// Stream halves counted open, over all open connections (`iroh_do_core::Stats`).
+    #[wasm_bindgen(js_name = openStreams)]
+    pub fn open_streams(&self) -> usize {
+        self.node.stats().open_streams
+    }
+
+    /// Disconnects the node from its object: later frames and callbacks go nowhere. For
+    /// destroy, where node tasks may still be winding down after the object has dropped it.
+    pub fn detach(&self) {
+        host::remove(&self.id);
+    }
+
+    /// Runs work scheduled through `NodeHost.schedule`. Only Rust apps schedule.
     pub fn alarm(&self, key: &str, payload: &str) {
         self.node.alarm(key, payload);
     }
