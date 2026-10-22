@@ -35,7 +35,8 @@
 //! - [`State::Cold`]: no authenticated socket and no endpoint.
 //! - [`State::Warm`]: at least one authenticated socket, no endpoint, no tasks and no timers.
 //!   The host may hibernate the object.
-//! - [`State::Active`]: the endpoint is binding, bound or closing.
+//! - [`State::Active`]: the endpoint is binding, bound or closing, or an app task spawned
+//!   with [`Ctx::spawn`] is running.
 //!
 //! The first datagram or a [`Ctx::connect`] moves the node to Active. Binding is
 //! asynchronous; frames that arrive meanwhile wait in a FIFO bounded by
@@ -200,7 +201,7 @@ pub enum State {
     Cold,
     /// At least one authenticated socket, no endpoint and no tasks; hibernatable.
     Warm,
-    /// Endpoint binding, bound or closing.
+    /// Endpoint binding, bound or closing, or an app task running.
     Active,
 }
 
@@ -479,6 +480,7 @@ impl Drop for Busy {
         if inner.busy == 0 && matches!(inner.phase, Phase::Active { .. }) {
             self.0.start_linger_locked(&mut inner);
         }
+        self.0.note_state_locked(&mut inner);
     }
 }
 
@@ -569,6 +571,7 @@ impl Shared {
         let mut inner = self.lock();
         inner.busy += 1;
         inner.linger_epoch += 1;
+        self.note_state_locked(&mut inner);
         Busy(self.clone())
     }
 
@@ -775,6 +778,8 @@ impl Shared {
 
     fn state_locked(&self, inner: &Inner) -> State {
         match inner.phase {
+            // Work without an endpoint (an app task) must not be mistaken for an idle object.
+            Phase::Idle if inner.busy > 0 => State::Active,
             Phase::Idle if inner.sockets.is_empty() => State::Cold,
             Phase::Idle => State::Warm,
             _ => State::Active,

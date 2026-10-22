@@ -16,12 +16,14 @@ pinned sources line by line.
  relay client ── wss://<E>.<zone>/relay ──► Worker router (stateless)
                                               │ label <E> → idFromName(E) → stub.fetch
                                               ▼
-                                           Durable Object "E" (class room)
+                                           Durable Object "E" (class endpoint)
                                               ├─ ingress: relay protocol server, one session per socket
                                               ├─ hibernatable WebSockets, session state in attachments
                                               ├─ iroh Endpoint, only while Active
-                                              │    └─ custom transport: one path per connected peer
-                                              └─ SQLite: identity, counters, schedule, log, members
+                                              │    ├─ custom transport: one path per connected peer
+                                              │    └─ the app's protocol handlers, by ALPN
+                                              └─ SQLite: identity (with the app's name), counters,
+                                                 schedule, pkarr_state; the app's own tables
 
                                            Durable Object "registry" (class registry, one instance)
                                               └─ SQLite: the list of minted endpoints
@@ -30,9 +32,15 @@ pinned sources line by line.
 `E` is the endpoint's EndpointId. The object named `E` is the only place that
 holds `E`'s secret key, and the only server that accepts relay traffic for `E`.
 
-The Worker script is `iroh-do-chat`. Its classes are exported as `room` and
-`registry`, so Cloudflare names the namespaces `iroh-do-chat_room` and
-`iroh-do-chat_registry`; the router reaches them through the bindings `ROOMS`
+Each endpoint runs one app, chosen when it is minted: a set of iroh protocol
+handlers, its schema and its scheduled work (see [Apps](#apps)). This
+deployment has two, the chat room and iroh's echo example; all endpoints,
+whatever their app, share the namespace `<E>.<zone>`.
+
+The Worker script is `iroh-do`, built from `crates/iroh-do-worker`, which lists
+its apps in `iroh_do::worker!`. Its classes are exported as `endpoint` and
+`registry`, so Cloudflare names the namespaces `iroh-do_endpoint` and
+`iroh-do_registry`; the router reaches them through the bindings `ENDPOINTS`
 and `REGISTRY`.
 
 ## Addressing
@@ -146,16 +154,46 @@ initiates hole punching and never dials the IP or relay addresses a peer
 advertises; it accepts connections from peers it has not seen before
 (verification V14).
 
+## Apps
+
+The library hosts an app; it does not know what the app does
+([`design-notes/011`](design-notes/011-app-api.md)). An app implements
+`iroh_do_core::App` (`crates/iroh-do-core/src/app.rs`):
+
+- `protocols` registers iroh `ProtocolHandler`s by ALPN, the trait iroh's
+  `Router` takes. It runs on every activation, before the endpoint binds, and
+  the endpoint accepts exactly those ALPNs. The node dispatches accepted
+  connections as `Router` does: `on_accepting`, then `accept`.
+- `schema` is SQL the object runs on every construction of a minted object.
+- `on_alarm` receives work the app scheduled.
+- `status` adds fields to the endpoint's status.
+
+One app value exists per object construction. It reaches the node through
+`Ctx` (`crates/iroh-do-core/src/ctx.rs`): synchronous SQL, scheduling, the
+peers that hold a relay socket, dialing them, spawning tasks, and activity
+reports for the idle close.
+
+The deployment is a crate that invokes `iroh_do::worker! { apps: [...] }`,
+which declares the Durable Object classes and the Worker's `fetch` handler
+there (`crates/iroh-do/src/lib.rs`). An endpoint's app is stored in its
+identity at mint; an object whose app is missing from the running build
+refuses all traffic.
+
+The apps in this repository are `apps/chat` (the chat room and the diagnostic
+protocols, design notes 006–008) and `apps/echo` (iroh's `examples/echo.rs`
+handler, unchanged). `docs/writing-an-app.md` describes writing one.
+
 ## Lifecycle
 
 ```
            peer's relay socket                         first datagram,
-           authenticated                               or dial-back alarm
+           authenticated                               or a dial by the app
   ┌──────┐ ────────────────────────► ┌──────┐ ──────────────────────────► ┌────────┐
   │ Cold │                           │ Warm │                             │ Active │
   └──────┘ ◄──────────────────────── └──────┘ ◄────────────────────────── └────────┘
-           last socket closed                  no connections for t_linger;
-           by the peer                         Endpoint closed and dropped
+           last socket closed                  no connections or app tasks
+           by the peer                         for t_linger; Endpoint closed
+                                               and dropped
 ```
 
 The state machine is `crates/iroh-do-core/src/lib.rs`; the object drives it
@@ -170,18 +208,18 @@ memory while its WebSockets stay open. With Miniflare, a Warm object that has
 already run an `Endpoint` has no pending timers or fetches and is evicted on
 demand in 5 ms (`harness/workerd/evict-test.mjs`).
 
-**Active.** An `Endpoint` is running. The first datagram from a Warm state
+**Active.** An `Endpoint` is running, or an app task spawned with `Ctx::spawn` is. The first datagram from a Warm state
 starts the build; datagrams that arrive during the build wait in a FIFO queue
-of 128 frames, and later ones are dropped. A due dial-back also activates the
-object.
+of 128 frames, and later ones are dropped. A dial by the app (`Ctx::connect`)
+also activates the object.
 
 Transitions out of Active:
 
 | Timer | Default | Effect |
 |---|---|---|
-| `t_idle` | 10 s | A connection with no open streams and no application bytes for this long is closed with reason `idle`. |
-| `t_silent` | 60 s | A connection with open streams but no application bytes for this long is closed with reason `silent`. |
-| `t_linger` | 2 s | After the last connection closes, the `Endpoint` is closed and dropped once this long has passed with no new connection. The node then checks that none of its tasks remain. |
+| `t_idle` | 10 s | A connection with no application data for this long is closed with reason `idle`. An app may set another limit per ALPN. |
+| `t_silent` | 60 s | Replaces `t_idle` while a handler reports an open stream; the close reason is `silent`. |
+| `t_linger` | 2 s | Once no connection is open and no app task runs, the `Endpoint` is closed and dropped after this long with no new work. The node then checks that none of its tasks remain. |
 
 The object cannot rely on QUIC's idle timeout to end connections. iroh sends
 a keep-alive on every path every 5 s, which its public API cannot disable,
@@ -189,6 +227,15 @@ and stock peers do the same, so a QUIC connection never goes idle
 ([`design-notes/005`](design-notes/005-idle-close-and-restart-state.md)).
 `t_idle` and `t_silent` are the object's own policy. Peers see a normal
 application close and redial when they next have something to send.
+
+The node sees application data in one of two ways
+(`crates/iroh-do-core/src/conn.rs`). By default it samples a connection's
+STREAM frame counts every quarter of the shorter limit; keep-alives are PING
+and ACK frames and leave them alone (design note 011, phase 0), so the close
+comes between one and one and a quarter limits after the last data. A handler
+that reports activity through `Ctx::activity` gets exact timing instead, and
+the `idle`/`silent` distinction, which needs to know whether a stream is open.
+The chat's handlers report activity.
 
 Transitions out of Warm are the peer's decision. The object never closes an
 idle relay socket. The iroh client closes its connection to a relay that is
@@ -225,16 +272,25 @@ the truncation in n0-future, which rounding up would remove.
 Each object uses its own SQLite database through the synchronous `sql.exec`
 API (`crates/iroh-do/src/glue/store.rs`). Nothing is written per packet.
 
+The library's tables (`crates/iroh-do/src/schema.rs`):
+
 | Table | Contents |
 |---|---|
-| `identity` | The endpoint's secret key and EndpointId. Written once, at mint. |
-| `counters` | `wakes` (object constructions) and `endpoint_builds`. |
-| `schedule` | Alarm work: dial-backs, pkarr republish, the handshake-deadline sweep. One alarm is armed for the earliest row. |
+| `identity` | The endpoint's app, secret key and EndpointId. Written once, at mint. |
+| `counters` | `wakes` (object constructions), `endpoint_builds`, `registered`. |
+| `schedule` | Alarm work: pkarr republish, the handshake-deadline sweep, and the app's work under keys prefixed `app:`. One alarm is armed for the earliest row. |
 | `pkarr_state` | Result of the last publish. |
-| `log` | The demo's message log: room events and diagnostic requests (newest 10,000 rows, none older than 14 days). |
+
+The app's tables follow, from its `App::schema`. The chat's
+(`apps/chat/src/store.rs`):
+
+| Table | Contents |
+|---|---|
+| `log` | The message log: room events and diagnostic requests (newest 10,000 rows, none older than 14 days). |
+| `log_meta` | `log_seq` and `room_seq`, which keep `seq` and `prev` monotonic across pruning. |
 | `members` | Chat room members: peer id, nick, whether joined. |
 
-The registry object holds one table, `endpoints(id, label, minted_at)`.
+The registry object holds one table, `endpoints(id, app, label, minted_at)`.
 
 Session state lives in WebSocket attachments, not in SQLite. The schema is
 created as-is on first use; there is no upgrade path, so changing it means
@@ -257,11 +313,13 @@ previous instance's connections. See [Restart state](#restart-state).
 
 ## Dial-back
 
-The object can connect to a peer that holds a relay socket to it. In the
-diagnostic protocol (`iroh-do/ctl/1`), a peer sends `/callback <secs>`. The object
-stores a schedule row and arms an alarm. When the alarm fires, the object
-starts its `Endpoint` if needed and calls `Endpoint::connect` with an
-`EndpointAddr` whose only address is the peer's `CustomAddr`. The QUIC
+The object can connect to a peer that holds a relay socket to it, through
+`Ctx::connect`. In the chat app's diagnostic protocol (`iroh-do/ctl/1`), a peer
+sends `/callback <secs>`. The app schedules work through `Ctx::schedule`, which
+stores a schedule row and arms an alarm. When the alarm fires, the app calls
+`Ctx::connect`, which starts the `Endpoint` if needed and calls
+`Endpoint::connect` with an `EndpointAddr` whose only address is the peer's
+`CustomAddr`. The QUIC
 handshake goes out over the peer's existing relay socket. A stock iroh client
 accepts an incoming connection that arrives through a relay other than its
 home relay (verification V20).
@@ -276,8 +334,8 @@ making the room its home relay; see [The chat room](#the-chat-room).
 
 ## The chat room
 
-Each endpoint is a small chat room (`iroh-do/room/1`,
-`crates/iroh-do-core/src/room.rs`; protocol in
+An endpoint minted with the chat app is a small chat room (`iroh-do/room/1`,
+`apps/chat/src/room.rs`; protocol in
 [`design-notes/008`](design-notes/008-chat-room.md)). Members run
 `iroh-do-chat <E>`. Messages, actions, joins, parts and nick changes are
 stored in the `log` table, so scrollback survives hibernation, eviction and
@@ -339,10 +397,12 @@ Authorization: Bearer <ADMIN_TOKEN>
 ```
 
 The router compares the token in constant time, generates a secret key in the
-isolate, and sends it to the object named after the new EndpointId on the
-internal mint path. The object stores it if it has no identity yet, verifies
-the key against its name, publishes the pkarr record, and returns
-`{id, relay_url, published}`. The secret is never returned and there is no
+isolate, and sends it with the app's name to the object named after the new
+EndpointId on the internal mint path. The body may name the app,
+`{"app": "echo"}`; with none, the deployment's first app is used, and an
+unknown name is a 400. The object stores the key and the app's name if it has
+no identity yet, verifies the key against its name, creates the app's tables,
+publishes the pkarr record, and returns `{id, app, relay_url, published}`. The secret is never returned and there is no
 export path. The admin token is an OpenTofu variable; the keys never pass
 through OpenTofu. The request body may carry a `label`, which the router
 records with the new id in the registry.
@@ -362,11 +422,12 @@ a registry object (class `registry`, one instance). An endpoint minted
 before the registry existed registers itself once, on its next wake.
 
 `GET https://admin.<zone>/` renders the list as plain HTML, newest first, with
-the `iroh-do-chat <E>` command for each room; `GET /endpoints.json`
-returns the same data. Rendering wakes only the registry. A row's live status
-(`GET /status/<E>`) is fetched only on request, because it wakes that room.
-The list is public: in this deployment, endpoint ids are not secret, and
-anyone who knows one can join the room. Minting stays behind the admin token
+each endpoint's app and the app's command for it (`App::join_hint`, for example
+`iroh-do-chat <E>`); `GET /endpoints.json` returns the same data. Rendering
+wakes only the registry. A row's live status (`GET /status/<E>`) is fetched
+only on request, because it wakes that endpoint. The list is public: in this
+deployment, endpoint ids are not secret, and anyone who knows one can connect
+to it. Minting stays behind the admin token
 ([`design-notes/009`](design-notes/009-endpoint-list.md)).
 
 ## Failure handling

@@ -11,9 +11,10 @@ that reviews refer to; `docs/design-notes/` records every change to it.
   Do not add `[patch.crates-io]` or path or git dependencies on iroh, and do
   not wire in `upstream/`. Read `upstream/AGENTS.md` before touching that
   directory.
-- **The demo peer stays stock** (P3). `crates/iroh-do-demo` uses iroh with
-  default features and default discovery. Do not change that to make a test
-  pass.
+- **The demo peers stay stock** (P3). `crates/iroh-do-demo` and
+  `apps/echo-client` use iroh with default features and default discovery,
+  and do not depend on the iroh-do crates, whose iroh features cargo would
+  unify into theirs. Do not change that to make a test pass.
 - **Design changes need a design note** in `docs/design-notes/`, numbered
   next in sequence, and `docs/design.md` must be updated to match. Changes
   that touch a principle in `docs/spec.md` §1 need the user's review first.
@@ -41,7 +42,7 @@ that reviews refer to; `docs/design-notes/` records every change to it.
   - `cargo test -p iroh-relay-ingress`: protocol conformance against the
     upstream codec and a stock client.
   - `cargo test -p iroh-do-harness`: the full node in a tokio host against
-    stock peers.
+    stock peers; `tests/library.rs` covers the app API with the echo app.
   - `node harness/workerd/evict-test.mjs`: forced eviction in Miniflare.
   - `LOCAL_PORT=8799 just local`: the scripted session on workerd. Port 8787
     is taken by another program on the maintainer's machine.

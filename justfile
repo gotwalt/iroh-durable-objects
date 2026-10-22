@@ -98,7 +98,8 @@ up: build
     exit 1
 
 # Mint an endpoint of app APP (default chat) inside the Worker; write E (never the key) to
-# .demo/endpoint. LOCAL=1 mints in `just local-up`'s workerd instead, into .demo/endpoint.local.
+# .demo/endpoint. LOCAL=1 mints in `just local-up`'s workerd instead, into .demo/endpoint.local.APP
+# (`just local-up` keeps its own room in .demo/endpoint.local).
 mint APP="chat" LABEL="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -106,8 +107,8 @@ mint APP="chat" LABEL="":
     export MINT_LABEL={{quote(LABEL)}}
     if [ -n "${LOCAL:-}" ]; then
         port="${LOCAL_PORT:-$(cat "{{demo_dir}}/local-up.port" 2>/dev/null || echo 8787)}"
-        just _mint "http://admin.localhost:$port" "{{demo_dir}}/admin_token.local" "{{demo_dir}}/endpoint.local" "--resolve admin.localhost:$port:127.0.0.1"
-        out="{{demo_dir}}/endpoint.local"; pre="LOCAL=1 "
+        out="{{demo_dir}}/endpoint.local.{{APP}}"; pre="LOCAL=1 "
+        just _mint "http://admin.localhost:$port" "{{demo_dir}}/admin_token.local" "$out" "--resolve admin.localhost:$port:127.0.0.1"
     else
         export TF_VAR_state_passphrase="$(cat "{{demo_dir}}/state_passphrase")"
         admin=$(tofu -chdir="{{infra}}" output -raw admin_url)

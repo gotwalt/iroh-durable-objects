@@ -227,3 +227,29 @@ async fn connect_without_socket_fails_without_binding() {
     assert_eq!(obj.node().unwrap().stats().endpoint_builds, 1);
     ep.close().await;
 }
+
+/// A task spawned with `Ctx::spawn` makes the object Active even with no endpoint bound, so a
+/// host does not hibernate it under the task; it returns to Warm when the task ends.
+#[tokio::test(flavor = "multi_thread")]
+async fn app_task_keeps_object_active() {
+    let h = Harness::start().await.unwrap();
+    let obj = h.mint::<CallBack>(Timings::default());
+    let ep = peer(vec![]).await;
+    let conn = ep.connect(addr(&h, &obj), ASK).await.expect("connect");
+    conn.close(0u32.into(), b"bye");
+    warm_and_quiet(&obj, Duration::from_secs(10)).await;
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    obj.node().unwrap().ctx().spawn(async move {
+        let _ = rx.await;
+    });
+    assert_eq!(obj.state(), State::Active);
+    assert!(obj.hibernate().is_err(), "hibernated under a running task");
+    tx.send(()).unwrap();
+    warm_and_quiet(&obj, Duration::from_secs(5)).await;
+    assert_eq!(
+        obj.node().unwrap().stats().endpoint_builds,
+        1,
+        "no endpoint was bound"
+    );
+    ep.close().await;
+}

@@ -7,6 +7,11 @@ relay URL, and connect. The object serves that relay URL itself, runs QUIC
 end to end with the peer, keeps its state in its own SQLite database, and
 hibernates when nobody is talking to it.
 
+What the endpoint does is up to an app: a set of ordinary iroh
+`ProtocolHandler`s, the kind iroh's `Router` takes. This repository has two, a
+chat room and iroh's own echo example, run unchanged. See
+[Run your own iroh protocol](#run-your-own-iroh-protocol).
+
 ## Install the chat client
 
 macOS builds of `iroh-do-chat` (universal, signed and notarized) are on the
@@ -75,7 +80,7 @@ discovery, passed all 26 checks:
 
 The same run passes against local workerd, with no Cloudflare account.
 
-Each endpoint is also a small chat room. `iroh-do-chat <E>` opens a
+An endpoint minted with the chat app is a small chat room. `iroh-do-chat <E>` opens a
 terminal client: scrollback from the object's SQLite, live messages from the
 other members, `/me`, `/nick`, `/who`. Members do not hold QUIC connections
 between messages, so a room hibernates as soon as a conversation pauses, and
@@ -83,6 +88,34 @@ the room delivers new messages by dialing each member over that member's relay
 socket. In production, `just demo --room` showed a quiet member staying
 present while the room hibernated, then messages delivered in both directions
 by dial-back in about 100 ms. See [The chat room](docs/design.md#the-chat-room).
+
+## Run your own iroh protocol
+
+iroh-do is a library. An app is a crate that registers protocol handlers by
+ALPN; this is the whole echo app, apart from the handler, which is copied
+unchanged from iroh's `examples/echo.rs`:
+
+```rust
+impl App for EchoApp {
+    const NAME: &'static str = "echo";
+    fn new(_ctx: &Ctx) -> Self { EchoApp }
+    fn protocols(&self, _ctx: &Ctx, p: &mut Protocols) {
+        p.accept(ALPN, Echo);
+    }
+}
+```
+
+A deployment lists its apps, `iroh_do::worker! { apps: [ChatApp, EchoApp] }`,
+and every endpoint is minted with one of them (`just mint echo`). All endpoints
+share the namespace `<E>.<zone>`. A stock iroh peer dials an echo endpoint by
+its EndpointId alone: `just echo <E>`.
+
+The endpoint lives in a Durable Object, which changes a few rules: state that
+must survive goes in SQLite, later work goes through the object's alarm, and
+the endpoint can dial only peers connected to it. Protocols that dial
+arbitrary peers do not fit. [`docs/writing-an-app.md`](docs/writing-an-app.md)
+walks through it; [`design-notes/011`](docs/design-notes/011-app-api.md) is
+the design.
 
 ## Trust model
 
@@ -149,7 +182,12 @@ just local-down                  # stop it; the room stays in .demo/wrangler-sta
 ```
 
 `just local` reuses a server that `just local-up` started and mints its own
-endpoint, so the room is not touched.
+endpoint, so the room is not touched. To try the echo app on the same server:
+
+```sh
+LOCAL=1 just mint echo           # prints E
+LOCAL=1 just echo <E> "hello"    # a stock iroh peer echoes through the object
+```
 
 On Cloudflare, with a zone that has Advanced Certificate Manager and an API
 token with the permissions listed in [`infra/README.md`](infra/README.md):
@@ -158,7 +196,8 @@ token with the permissions listed in [`infra/README.md`](infra/README.md):
 cp infra/examples/terraform.tfvars.example infra/mine.auto.tfvars   # account and zone ids
 export CLOUDFLARE_API_TOKEN=...
 just up      # build and apply; OpenTofu owns every resource
-just mint friends   # create an endpoint labelled "friends"; prints E and the join command
+just mint chat friends   # create a chat endpoint labelled "friends"; prints E and the join command
+just mint echo      # create an echo endpoint; then: just echo <E>
 just destroy-room <E>   # delete an endpoint, its key and its history (asks first)
 just demo           # the scripted session above
 just plan    # expect no changes
@@ -181,8 +220,8 @@ runs the demo peer against `.demo/endpoint`. Other commands: `ping`, `ctl`
 ## How it works
 
 [`docs/design.md`](docs/design.md) describes the design as built: addressing,
-the relay ingress, the custom transport, the object lifecycle, persistence,
-dial-back, the chat room, the endpoint list, discovery and failure handling. [`docs/README.md`](docs/README.md)
+the relay ingress, the custom transport, apps, the object lifecycle,
+persistence, dial-back, the chat room, the endpoint list, discovery and failure handling. [`docs/README.md`](docs/README.md)
 indexes the rest of the documentation.
 
 ## Layout
@@ -190,9 +229,13 @@ indexes the rest of the documentation.
 ```
 crates/iroh-relay-ingress/      server side of the iroh relay protocol, sans-io
 crates/iroh-ingress-transport/  iroh custom transport whose paths are peers' relay sockets
-crates/iroh-do-core/            object lifecycle, Endpoint build and teardown, demo protocols
-crates/iroh-do/                 the Worker (script `iroh-do-chat`): router, `room` and `registry` Durable Objects (wasm32)
+crates/iroh-do-core/            object lifecycle, Endpoint build and teardown, the app API
+crates/iroh-do/                 the library: router, endpoint and registry objects, `worker!` (wasm32 glue)
+crates/iroh-do-worker/          this repository's deployment: script `iroh-do` with the chat and echo apps
 crates/iroh-do-demo/            the iroh-do-chat client and diagnostics CLI (stock iroh)
+apps/chat/                      the chat room and diagnostic protocols
+apps/echo/                      iroh's echo example as an app
+apps/echo-client/               a stock iroh peer for the echo app
 harness/native/                 tokio host for the same code, with tests against stock peers
 harness/workerd/                local workerd config and Miniflare eviction tests
 infra/                          OpenTofu module for the Cloudflare deployment

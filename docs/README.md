@@ -1,6 +1,8 @@
 # Documentation
 
 - [`design.md`](design.md): the design as built. Start here.
+- [`writing-an-app.md`](writing-an-app.md): running your own iroh protocol in
+  iroh-do, with the echo app as the example.
 - [`spec.md`](spec.md): the original plan, written before implementation.
   Where it disagrees with `design.md`, a design note explains why.
 - [`design-notes/`](design-notes/): the decision log, numbered in order. Each
