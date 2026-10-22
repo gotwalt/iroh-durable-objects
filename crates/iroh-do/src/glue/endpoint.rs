@@ -1,6 +1,7 @@
-//! The `room` Durable Object class (spec §5.5–§5.8, §13.4).
+//! The endpoint object: what the `endpoint` Durable Object class that
+//! [`worker!`](crate::worker) declares delegates to (spec §5.5–§5.8, §13.4).
 //!
-//! One object per EndpointId. It accepts peers' relay WebSockets as
+//! One object per EndpointId, running the app named in its identity. It accepts peers' relay WebSockets as
 //! hibernatable sockets, runs one ingress session per socket, and hands
 //! authenticated peers and their datagrams to `iroh_do_core::Node`, which owns
 //! the iroh `Endpoint`.
@@ -28,11 +29,9 @@ use iroh_relay_ingress::{
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 use worker::{
-    DurableObject, Env, Request, Response, Result, State, WebSocket, WebSocketIncomingMessage,
-    WebSocketPair, durable_object,
+    Env, Request, Response, Result, State, WebSocket, WebSocketIncomingMessage, WebSocketPair,
 };
 
-use iroh_do_chat_app::ChatApp;
 use iroh_do_core::{APP_KEY_PREFIX, AppEntry, Config as NodeConfig, Node};
 
 use super::{
@@ -40,8 +39,8 @@ use super::{
     node::{self, DoHost},
     pkarr_publish, registry,
     router::{
-        DestroyResponse, INTERNAL_DESTROY, INTERNAL_MINT, INTERNAL_STATUS, MintRequest,
-        MintResponse, NAME_HEADER, ROOMS_BINDING,
+        DestroyResponse, ENDPOINTS_BINDING, INTERNAL_DESTROY, INTERNAL_MINT, INTERNAL_STATUS,
+        MintRequest, MintResponse, NAME_HEADER,
     },
     store::{Due, Identity, Store},
 };
@@ -112,17 +111,21 @@ struct Slot {
 struct Me {
     id: EndpointId,
     secret: SecretKey,
+    app: AppEntry,
     relay_url: String,
     pkarr_relay: String,
     cfg: IngressConfig,
 }
 
-/// An iroh endpoint as a Durable Object, exported to JS as `room`.
-#[allow(non_camel_case_types)]
-#[durable_object]
-pub struct room {
+/// An iroh endpoint as a Durable Object.
+///
+/// Not a Durable Object class itself: [`worker!`](crate::worker) declares the class
+/// `endpoint` in the deployment's crate and delegates every handler to this type.
+pub struct Object {
     state: State,
     env: Env,
+    /// The apps this deployment was built with.
+    apps: &'static [AppEntry],
     store: Store,
     me: RefCell<Option<Me>>,
     /// The stored identity exists but violates the name invariant (§13.4.4).
@@ -133,7 +136,7 @@ pub struct room {
     wakes: Cell<i64>,
 }
 
-impl room {
+impl Object {
     /// This object's EndpointId in z-base-32, or `""` before it is minted. Every event this
     /// object logs carries it as `endpoint`.
     fn endpoint(&self) -> String {
@@ -152,7 +155,7 @@ impl room {
     }
 
     fn id_matches_name(&self, id: &EndpointId) -> bool {
-        let Ok(ns) = self.env.durable_object(ROOMS_BINDING) else {
+        let Ok(ns) = self.env.durable_object(ENDPOINTS_BINDING) else {
             return false;
         };
         match ns.id_from_name(&id.to_z32()) {
@@ -172,6 +175,13 @@ impl room {
         };
         let Some(ident) = ident else { return };
         let id = ident.secret.public();
+        let Some(app) = AppEntry::find(self.apps, &ident.app) else {
+            // Minted by a build with an app this one lacks: refuse rather than run another
+            // app on its storage.
+            error!(event = "unknown_app", endpoint = %id.to_z32(), app = %ident.app);
+            self.refused.set(true);
+            return;
+        };
         if !self.id_matches_name(&id) {
             // §13.4.4: fatal configuration error. Refuse everything, log once.
             error!(
@@ -184,6 +194,7 @@ impl room {
         }
         *self.me.borrow_mut() = Some(Me {
             id,
+            app,
             cfg: IngressConfig::new(id),
             secret: ident.secret,
             relay_url: ident.relay_url,
@@ -430,6 +441,9 @@ impl room {
             return Response::error("identity exists", 409);
         }
         let body: MintRequest = req.json().await?;
+        let Some(app) = AppEntry::find(self.apps, &body.app) else {
+            return Response::error("unknown app", 400);
+        };
         let bytes = data_encoding::HEXLOWER
             .decode(body.secret_hex.as_bytes())
             .map_err(|_| worker::Error::RustError("bad secret".into()))?;
@@ -451,13 +465,14 @@ impl room {
             return Response::error("identity exists", 409);
         }
         let ident = Identity {
+            app: app.name.to_string(),
             secret: secret.clone(),
             relay_url: body.relay_url.clone(),
             pkarr_relay: body.pkarr_relay.clone(),
         };
         let t0 = now_ms();
         self.store.insert_identity(&ident, t0)?;
-        self.store.create_schema((app().schema)())?;
+        self.store.create_schema((app.schema)())?;
         self.wakes.set(self.store.bump("wakes")?);
         self.load();
         self.ensure_node();
@@ -466,12 +481,14 @@ impl room {
         info!(
             event = "mint",
             endpoint = %id.to_z32(),
+            app = app.name,
             published,
             label = %body.label,
             ms = now_ms() - t0,
         );
         Response::from_json(&MintResponse {
             id: id.to_z32(),
+            app: app.name.to_string(),
             relay_url: body.relay_url,
             published,
         })
@@ -485,7 +502,7 @@ impl room {
         let Some(name) = req.headers().get(NAME_HEADER)? else {
             return Response::error("missing name", 400);
         };
-        let is_me = match self.env.durable_object(ROOMS_BINDING) {
+        let is_me = match self.env.durable_object(ENDPOINTS_BINDING) {
             Ok(ns) => ns.id_from_name(&name).is_ok_and(|id| id == self.state.id()),
             Err(_) => false,
         };
@@ -531,11 +548,17 @@ impl room {
     /// Records this endpoint in the registry and sets the `registered` flag.
     /// A failure is logged; the next wake tries again.
     async fn register(&self, label: String) {
-        let Some(id) = self.me.borrow().as_ref().map(|m| m.id) else {
+        let Some((id, app_name)) = self
+            .me
+            .borrow()
+            .as_ref()
+            .map(|m| (m.id, m.app.name.to_string()))
+        else {
             return;
         };
         let entry = crate::registry::Entry {
             id: id.to_z32(),
+            app: app_name,
             label,
             minted_at: self.store.minted_at().unwrap_or(0),
         };
@@ -675,14 +698,16 @@ impl room {
     }
 }
 
-impl DurableObject for room {
-    fn new(state: State, env: Env) -> Self {
+impl Object {
+    /// The class constructor: rebuilds the object from storage and its sockets.
+    pub fn new(state: State, env: Env, apps: &'static [AppEntry]) -> Self {
         super::logging::install(&env);
         super::timers::install();
         let store = Store::new(state.storage().sql());
         let this = Self {
             state,
             env,
+            apps,
             store,
             me: RefCell::new(None),
             refused: Cell::new(false),
@@ -693,7 +718,12 @@ impl DurableObject for room {
         this.load();
         if this.me.borrow().is_some() {
             // Only objects with an identity ever write (§13.4.5).
-            if let Err(e) = this.store.create_schema((app().schema)()) {
+            let schema = this
+                .me
+                .borrow()
+                .as_ref()
+                .map_or(&[][..], |m| (m.app.schema)());
+            if let Err(e) = this.store.create_schema(schema) {
                 error!(event = "schema_failed", endpoint = %this.endpoint(), error = %e);
             }
             match this.store.bump("wakes") {
@@ -718,7 +748,8 @@ impl DurableObject for room {
         this
     }
 
-    async fn fetch(&self, req: Request) -> Result<Response> {
+    /// The class's `fetch`: relay upgrades and the router's internal calls.
+    pub async fn fetch(&self, req: Request) -> Result<Response> {
         let path = req.path();
         if path == INTERNAL_MINT && req.method() == worker::Method::Post {
             return self.internal_mint(req).await;
@@ -742,7 +773,12 @@ impl DurableObject for room {
         self.upgrade(req).await
     }
 
-    async fn websocket_message(&self, ws: WebSocket, msg: WebSocketIncomingMessage) -> Result<()> {
+    /// The class's `webSocketMessage`.
+    pub async fn websocket_message(
+        &self,
+        ws: WebSocket,
+        msg: WebSocketIncomingMessage,
+    ) -> Result<()> {
         if self.refused.get() || self.me.borrow().is_none() {
             let _ = ws.close(Some(CLOSE_REFUSED), Some("refused"));
             return Ok(());
@@ -846,7 +882,8 @@ impl DurableObject for room {
         Ok(())
     }
 
-    async fn websocket_close(
+    /// The class's `webSocketClose`.
+    pub async fn websocket_close(
         &self,
         ws: WebSocket,
         code: usize,
@@ -870,7 +907,8 @@ impl DurableObject for room {
         Ok(())
     }
 
-    async fn websocket_error(&self, ws: WebSocket, error: worker::Error) -> Result<()> {
+    /// The class's `webSocketError`.
+    pub async fn websocket_error(&self, ws: WebSocket, error: worker::Error) -> Result<()> {
         if let Some(sid) = self.sid_of(&ws) {
             warn!(
                 event = "socket_close",
@@ -884,7 +922,8 @@ impl DurableObject for room {
         Ok(())
     }
 
-    async fn alarm(&self) -> Result<Response> {
+    /// The class's `alarm`.
+    pub async fn alarm(&self) -> Result<Response> {
         if self.refused.get() || self.me.borrow().is_none() {
             return Response::ok("refused");
         }
@@ -967,14 +1006,19 @@ async fn register_entry(
     }
 }
 
-impl room {
+impl Object {
     /// Registers an endpoint minted before the registry existed, once
     /// (design note 009). Runs from the constructor without blocking it.
     fn backfill_registry(&self) {
         if self.refused.get() {
             return;
         }
-        let Some(id) = self.me.borrow().as_ref().map(|m| m.id) else {
+        let Some((id, app)) = self
+            .me
+            .borrow()
+            .as_ref()
+            .map(|m| (m.id, m.app.name.to_string()))
+        else {
             return;
         };
         if self.store.registered().unwrap_or(true) {
@@ -982,6 +1026,7 @@ impl room {
         }
         let entry = crate::registry::Entry {
             id: id.to_z32(),
+            app,
             label: String::new(),
             minted_at: self.store.minted_at().unwrap_or(0),
         };
@@ -1013,15 +1058,14 @@ impl room {
             .ok()
             .and_then(|n| u64::try_from(n).ok())
             .unwrap_or(0);
-        let n = Node::new(config, std::sync::Arc::new(DoHost { local: me.id }), &app());
+        let n = Node::new(
+            config,
+            std::sync::Arc::new(DoHost { local: me.id }),
+            &me.app,
+        );
         for peer in links::peers(&me.id) {
             n.socket_authenticated(peer);
         }
         *self.node.borrow_mut() = Some(n);
     }
-}
-
-/// The app every endpoint runs.
-fn app() -> AppEntry {
-    AppEntry::of::<ChatApp>()
 }

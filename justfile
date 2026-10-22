@@ -33,7 +33,7 @@ build-demo:
     cargo build --release -p iroh-do-demo
 
 # On macOS, ring must be built with Homebrew LLVM's clang and llvm-ar: Apple's ar
-# writes empty wasm32 archives. See crates/iroh-do/BUILD.md.
+# writes empty wasm32 archives. See crates/iroh-do-worker/BUILD.md.
 #
 # Worker bundle (router + Durable Object class) into build/worker/ via worker-build.
 build-worker:
@@ -43,7 +43,7 @@ build-worker:
         llvm="${LLVM_PREFIX:-$(brew --prefix llvm 2>/dev/null || echo /opt/homebrew/opt/llvm)}"
         [ -x "$llvm/bin/llvm-ar" ] || { echo "error: brew install llvm (clang + llvm-ar are required for wasm32)" >&2; exit 1; }
     fi
-    exec "{{root}}/crates/iroh-do/build-worker.sh"
+    exec "{{root}}/crates/iroh-do-worker/build-worker.sh"
 
 # Print the bundle's content address (same value as the BUNDLE_SHA256 binding) and sizes.
 bundle-info:
@@ -97,15 +97,20 @@ up: build
     echo "certificate not serving yet; check: tofu -chdir=infra output certificate_status" >&2
     exit 1
 
-# Mint an endpoint identity inside the Worker; write E (never the key) to .demo/endpoint.
-mint LABEL="":
+# Mint an endpoint of app APP (default chat) inside the Worker; write E (never the key) to .demo/endpoint.
+mint APP="chat" LABEL="":
     #!/usr/bin/env bash
     set -euo pipefail
     export TF_VAR_state_passphrase="$(cat "{{demo_dir}}/state_passphrase")"
+    export MINT_APP={{quote(APP)}}
     export MINT_LABEL={{quote(LABEL)}}
     admin=$(tofu -chdir="{{infra}}" output -raw admin_url)
     just _mint "$admin" "{{demo_dir}}/admin_token" "{{demo_dir}}/endpoint"
-    echo "join:      just chat $(cat "{{demo_dir}}/endpoint")"
+    if [ {{quote(APP)}} = chat ]; then
+        echo "join:      just chat $(cat "{{demo_dir}}/endpoint")"
+    else
+        echo "endpoint:  $(cat "{{demo_dir}}/endpoint")"
+    fi
 
 # Destroy endpoint E: close its sockets, delete its key and history, drop it from the list.
 # Cannot be undone. Asks first unless CONFIRM=1. LOCAL=1 targets the local workerd.
@@ -193,7 +198,7 @@ local *ARGS: build
         just _local-serve "$port" "{{demo_dir}}/wrangler.log" "$pidf"
         trap 'just _local-stop "'"$pidf"'"' EXIT
     fi
-    just _mint "http://admin.localhost:$port" "{{demo_dir}}/admin_token.local" "{{demo_dir}}/endpoint.lifecycle" "--resolve admin.localhost:$port:127.0.0.1"
+    MINT_APP=chat just _mint "http://admin.localhost:$port" "{{demo_dir}}/admin_token.local" "{{demo_dir}}/endpoint.lifecycle" "--resolve admin.localhost:$port:127.0.0.1"
     "{{run}}" "{{demo_bin}}" --local --local-port "$port" lifecycle "$(cat "{{demo_dir}}/endpoint.lifecycle")" {{ARGS}}
 
 # State persists in .demo/wrangler-state; the log is .demo/local-up.log, the pid
@@ -222,7 +227,7 @@ local-up: build
         [ "$code" = "404" ] && { echo "room $(cat "$ep") is not in the local state; minting a new one"; rm -f "$ep"; }
     fi
     if [ ! -s "$ep" ]; then
-        MINT_LABEL=local just _mint "http://admin.localhost:$port" "{{demo_dir}}/admin_token.local" "$ep" "--resolve admin.localhost:$port:127.0.0.1"
+        MINT_APP=chat MINT_LABEL=local just _mint "http://admin.localhost:$port" "{{demo_dir}}/admin_token.local" "$ep" "--resolve admin.localhost:$port:127.0.0.1"
     fi
     e=$(cat "$ep")
     portenv=""; [ "$port" = "8787" ] || portenv="LOCAL_PORT=$port "
@@ -335,7 +340,7 @@ down:
     : "${CLOUDFLARE_API_TOKEN:?export CLOUDFLARE_API_TOKEN first}"
     export TF_VAR_admin_token="$(cat "{{demo_dir}}/admin_token")"
     export TF_VAR_state_passphrase="$(cat "{{demo_dir}}/state_passphrase")"
-    script=$(tofu -chdir="{{infra}}" output -raw script_name 2>/dev/null || echo iroh-do-chat)
+    script=$(tofu -chdir="{{infra}}" output -raw script_name 2>/dev/null || echo iroh-do)
     suffix=$(tofu -chdir="{{infra}}" output -raw zone_suffix 2>/dev/null || echo "?")
     cat >&2 <<EOF
 
@@ -370,15 +375,17 @@ _mint ADMIN TOKEN_FILE OUT CURL_EXTRA="":
     set -euo pipefail
     [ -s "{{TOKEN_FILE}}" ] || { echo "error: {{TOKEN_FILE}} missing (run just up / just local)" >&2; exit 1; }
     # Token goes to curl on stdin (-K -), never on argv. The optional label
-    # (MINT_LABEL) is JSON-encoded by node, so any text is safe.
-    body=$(MINT_LABEL="${MINT_LABEL:-}" node -e 'const l=process.env.MINT_LABEL;process.stdout.write(l?JSON.stringify({label:l}):"")')
+    # (MINT_LABEL) and app (MINT_APP) are JSON-encoded by node, so any text is safe.
+    body=$(MINT_APP="${MINT_APP:-}" MINT_LABEL="${MINT_LABEL:-}" node -e 'const a=process.env.MINT_APP,l=process.env.MINT_LABEL,o={};if(a)o.app=a;if(l)o.label=l;process.stdout.write(Object.keys(o).length?JSON.stringify(o):"")')
     resp=$(printf 'header = "Authorization: Bearer %s"\n' "$(cat "{{TOKEN_FILE}}")" \
         | curl -fsS -K - {{CURL_EXTRA}} -H 'Content-Type: application/json' --data-binary "$body" -X POST "{{ADMIN}}/mint")
     id=$(printf '%s' "$resp" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s);if(!/^[ybndrfg8ejkmcpqxot1uwisza345h769]{52}$/.test(r.id))process.exit(1);console.log(r.id)})')
     url=$(printf '%s' "$resp" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).relay_url))')
     published=$(printf '%s' "$resp" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).published))')
+    app=$(printf '%s' "$resp" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).app))')
     printf '%s\n' "$id" > "{{OUT}}"
     echo "E          = $id"
+    echo "app        = $app"
     echo "relay URL  = $url"
     echo "published  = $published (pkarr, note 004)"
     echo "saved to {{OUT}}"

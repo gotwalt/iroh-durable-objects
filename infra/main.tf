@@ -1,4 +1,4 @@
-# One Worker script containing the router and the `room` and `registry` Durable
+# One Worker script containing the router and the `endpoint` and `registry` Durable
 # Object classes, served at https://<E>.<hostname_prefix>.<zone_name>/ through a wildcard
 # route. OpenTofu owns every Cloudflare resource. Endpoint secret keys are
 # generated inside the Worker (POST /mint) and never pass through OpenTofu.
@@ -16,7 +16,7 @@ locals {
   bundle_sha256 = sha256("${filesha256(local.bundle_js)}${filesha256(local.bundle_wasm)}")
 
   # The Durable Object classes, declared in a single migration. Cloudflare names
-  # each namespace `<script_name>_<class>`, e.g. `iroh-do-chat_room`. It is sent only
+  # each namespace `<script_name>_<class>`, e.g. `iroh-do_endpoint`. It is sent only
   # when the live script has not applied it: the API rejects an upload whose
   # migration `old_tag` differs from the script's current tag (412, code
   # 10079), so an unconditional `migrations` block could create the script but
@@ -29,7 +29,7 @@ locals {
   ]), null)
   do_migrations = local.deployed_migration_tag == local.do_migration_tag ? null : {
     new_tag            = local.do_migration_tag
-    new_sqlite_classes = ["room", "registry"]
+    new_sqlite_classes = ["endpoint", "registry"]
   }
 }
 
@@ -42,7 +42,7 @@ resource "cloudflare_workers_script" "iroh_do" {
   script_name = var.script_name
 
   # worker-build output: the ESM entry and the wasm module it imports as
-  # "./index_bg.wasm" (crates/iroh-do/BUILD.md).
+  # "./index_bg.wasm" (crates/iroh-do-worker/BUILD.md).
   main_module    = "index.js"
   content_file   = local.bundle_js
   content_sha256 = filesha256(local.bundle_js)
@@ -59,8 +59,8 @@ resource "cloudflare_workers_script" "iroh_do" {
   bindings = [
     {
       type       = "durable_object_namespace"
-      name       = "ROOMS"
-      class_name = "room"
+      name       = "ENDPOINTS"
+      class_name = "endpoint"
     },
     {
       type       = "durable_object_namespace"

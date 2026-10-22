@@ -105,15 +105,25 @@ pub struct AppEntry {
 }
 
 impl AppEntry {
-    /// Returns the entry of `A`.
-    pub fn of<A: App>() -> Self {
+    /// Returns the entry of `A`. A `const fn`, so that a host can keep its apps in a
+    /// `static`.
+    pub const fn of<A: App>() -> Self {
         Self {
             name: A::NAME,
             schema: A::schema,
             join_hint: A::join_hint,
-            new: |ctx| Arc::new(A::new(ctx)),
+            new: new_app::<A>,
         }
     }
+
+    /// Returns the entry named `name` in `apps`.
+    pub fn find(apps: &[AppEntry], name: &str) -> Option<AppEntry> {
+        apps.iter().find(|a| a.name == name).copied()
+    }
+}
+
+fn new_app<A: App>(ctx: &Ctx) -> Arc<dyn DynApp> {
+    Arc::new(A::new(ctx))
 }
 
 impl std::fmt::Debug for AppEntry {

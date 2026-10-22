@@ -4,13 +4,12 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Cloudflare Worker + Durable Object shell hosting an iroh endpoint behind its own relay ingress"
+description = "iroh endpoints in Cloudflare Durable Objects: the Worker router, the endpoint and registry objects, and the worker! macro"
 publish = false
 
-[lib]
-crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+iroh-do-core = { path = "../iroh-do-core" }
 iroh-base = { workspace = true, features = ["key", "relay"] }
 iroh-dns = { version = "=1.4.0", default-features = false }
 serde = { version = "1", features = ["derive"] }
@@ -22,8 +21,6 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 iroh-relay-ingress = { path = "../iroh-relay-ingress" }
-iroh-do-core = { path = "../iroh-do-core" }
-iroh-do-chat-app = { path = "../../apps/chat" }
 worker = { workspace = true }
 # crypto.getRandomValues; `sys_rng` gives a rand_core 0.10 CryptoRng for the ingress challenge.
 getrandom = { version = "0.4", features = ["wasm_js", "sys_rng"] }

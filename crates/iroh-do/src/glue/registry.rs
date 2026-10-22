@@ -1,13 +1,13 @@
-//! The `registry` Durable Object class (design note 009) and the calls other code makes to
-//! it.
+//! The endpoint registry object (design note 009), which the `registry` Durable Object class
+//! that [`worker!`](crate::worker) declares delegates to, and the calls other code makes to it.
 //!
 //! One instance, named [`REGISTRY_NAME`], records every minted EndpointId so that the router
 //! can list them. Endpoint objects register themselves at mint, or on their first wake if they
 //! were minted before the registry existed.
 
 use worker::{
-    DurableObject, Env, Headers, Method, Request, RequestInit, Response, Result, SqlStorage,
-    SqlStorageValue, State, durable_object,
+    Env, Headers, Method, Request, RequestInit, Response, Result, SqlStorage, SqlStorageValue,
+    State,
 };
 
 use crate::registry::{
@@ -23,15 +23,14 @@ const INTERNAL_LIST: &str = "/_internal/list";
 /// Internal path: remove an endpoint (its z-base-32 id is the request body).
 const INTERNAL_UNREGISTER: &str = "/_internal/unregister";
 
-/// The endpoint registry, exported to JS as `registry`.
-#[allow(non_camel_case_types)]
-#[durable_object]
-pub struct registry {
+/// The endpoint registry.
+pub struct Registry {
     sql: SqlStorage,
 }
 
-impl DurableObject for registry {
-    fn new(state: State, env: Env) -> Self {
+impl Registry {
+    /// The class constructor.
+    pub fn new(state: State, env: Env) -> Self {
         super::logging::install(&env);
         let sql = state.storage().sql();
         for stmt in SCHEMA {
@@ -42,7 +41,8 @@ impl DurableObject for registry {
         Self { sql }
     }
 
-    async fn fetch(&self, mut req: Request) -> Result<Response> {
+    /// The class's `fetch`: the internal register, unregister and list calls.
+    pub async fn fetch(&self, mut req: Request) -> Result<Response> {
         match (req.method(), req.path().as_str()) {
             (Method::Post, INTERNAL_REGISTER) => {
                 let e: Entry = req.json().await?;
@@ -56,6 +56,7 @@ impl DurableObject for registry {
                     REGISTER,
                     vec![
                         e.id.into(),
+                        e.app.into(),
                         e.label.into(),
                         SqlStorageValue::Integer(e.minted_at),
                     ],

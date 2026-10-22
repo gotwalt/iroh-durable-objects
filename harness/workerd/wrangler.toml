@@ -1,6 +1,6 @@
 # For `wrangler dev` only: production is deployed by OpenTofu (infra/), never by
-# wrangler. Runs the bundle that crates/iroh-do/build-worker.sh writes.
-name = "iroh-do-chat"
+# wrangler. Runs the bundle that crates/iroh-do-worker/build-worker.sh writes.
+name = "iroh-do"
 main = "../../build/worker/index.js"
 # The newest date wrangler 4.130.0's bundled workerd accepts; infra/ uses the same.
 compatibility_date = "2026-09-15"
@@ -14,11 +14,11 @@ BUNDLE_SHA256 = "local"
 # tracing filter directives (design note 010); infra/ binds the same default.
 LOG_LEVEL = "info,iroh=warn,noq=warn,netwatch=error,iroh_do=info"
 
-# One object per endpoint. The class is exported to JS as `room`, so the
-# namespace is `iroh-do-chat_room`.
+# One object per endpoint. The class is exported to JS as `endpoint`, so the
+# namespace is `iroh-do_endpoint`.
 [[durable_objects.bindings]]
-name = "ROOMS"
-class_name = "room"
+name = "ENDPOINTS"
+class_name = "endpoint"
 
 # The endpoint list (design note 009).
 [[durable_objects.bindings]]
@@ -27,7 +27,7 @@ class_name = "registry"
 
 [[migrations]]
 tag = "v1"
-new_sqlite_classes = ["room", "registry"]
+new_sqlite_classes = ["endpoint", "registry"]
 
 [observability]
 enabled = true

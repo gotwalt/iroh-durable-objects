@@ -13,6 +13,8 @@ use crate::schema;
 
 /// The stored identity.
 pub struct Identity {
+    /// Name of the app the endpoint runs.
+    pub app: String,
     /// Endpoint secret key.
     pub secret: SecretKey,
     /// The relay URL published for this endpoint.
@@ -25,6 +27,7 @@ impl std::fmt::Debug for Identity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Identity")
             .field("public", &self.secret.public().to_z32())
+            .field("app", &self.app)
             .field("relay_url", &self.relay_url)
             .finish_non_exhaustive()
     }
@@ -38,6 +41,7 @@ pub struct Store {
 
 #[derive(Deserialize)]
 struct IdentityRow {
+    app: String,
     secret_hex: String,
     relay_url: String,
     pkarr_relay: String,
@@ -95,7 +99,7 @@ impl Store {
         let rows: Vec<IdentityRow> = self
             .sql
             .exec(
-                "SELECT secret_hex, relay_url, pkarr_relay FROM identity WHERE k = 1",
+                "SELECT app, secret_hex, relay_url, pkarr_relay FROM identity WHERE k = 1",
                 None,
             )?
             .to_array()?;
@@ -110,6 +114,7 @@ impl Store {
             .try_into()
             .map_err(|_| worker::Error::RustError("stored secret has wrong length".into()))?;
         Ok(Some(Identity {
+            app: row.app,
             secret: SecretKey::from_bytes(&arr),
             relay_url: row.relay_url,
             pkarr_relay: row.pkarr_relay,
@@ -168,8 +173,9 @@ impl Store {
         self.create_schema(&[])?;
         let hex = data_encoding::HEXLOWER.encode(&id.secret.to_bytes());
         self.sql.exec(
-            "INSERT INTO identity(k, secret_hex, relay_url, pkarr_relay, minted_at_ms) VALUES (1, ?, ?, ?, ?)",
+            "INSERT INTO identity(k, app, secret_hex, relay_url, pkarr_relay, minted_at_ms) VALUES (1, ?, ?, ?, ?, ?)",
             vec![
+                id.app.clone().into(),
                 hex.into(),
                 id.relay_url.clone().into(),
                 id.pkarr_relay.clone().into(),

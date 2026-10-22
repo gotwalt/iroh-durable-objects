@@ -6,6 +6,7 @@ members = [
   "crates/iroh-do-core",
   "apps/chat",
   "crates/iroh-do",
+  "crates/iroh-do-worker",
   "crates/iroh-do-demo",
   "harness/native",
 ]

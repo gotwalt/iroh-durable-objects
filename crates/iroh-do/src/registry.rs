@@ -20,25 +20,29 @@ pub const LIST_LIMIT: usize = 500;
 pub const SCHEMA: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS endpoints(
         id TEXT PRIMARY KEY,
+        app TEXT NOT NULL,
         label TEXT NOT NULL,
         minted_at INTEGER NOT NULL)",
     "CREATE INDEX IF NOT EXISTS endpoints_minted ON endpoints(minted_at)",
 ];
-/// Records an endpoint; binds `id, label, minted_at`. A second registration of the same id,
-/// such as a backfill racing a mint, keeps the first.
-pub const REGISTER: &str =
-    "INSERT INTO endpoints(id, label, minted_at) VALUES (?, ?, ?) ON CONFLICT(id) DO NOTHING";
+/// Records an endpoint; binds `id, app, label, minted_at`. A second registration of the same
+/// id, such as a backfill racing a mint, keeps the first.
+pub const REGISTER: &str = "INSERT INTO endpoints(id, app, label, minted_at) VALUES (?, ?, ?, ?)
+ ON CONFLICT(id) DO NOTHING";
 
 /// Removes one endpoint from the list (it was destroyed).
 pub const UNREGISTER: &str = "DELETE FROM endpoints WHERE id = ?";
 /// The newest `?` endpoints.
-pub const LIST: &str = "SELECT id, label, minted_at FROM endpoints ORDER BY minted_at DESC LIMIT ?";
+pub const LIST: &str =
+    "SELECT id, app, label, minted_at FROM endpoints ORDER BY minted_at DESC LIMIT ?";
 
 /// One registered endpoint, as stored and as `/endpoints.json` returns it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
     /// EndpointId, z-base-32.
     pub id: String,
+    /// Name of the app the endpoint runs.
+    pub app: String,
     /// Label given at mint; empty if none.
     pub label: String,
     /// Mint time in milliseconds since the UNIX epoch.
@@ -48,21 +52,24 @@ pub struct Entry {
 /// Body of `POST admin.<zone>/mint`; the body may also be empty.
 #[derive(Debug, Default, Deserialize)]
 pub struct MintBody {
+    /// Name of the app the endpoint runs; the deployment's first app if absent.
+    #[serde(default)]
+    pub app: Option<String>,
     /// Optional label shown on the list.
     #[serde(default)]
     pub label: Option<String>,
 }
 
-/// Returns the label of a mint request body, or an error message.
+/// Returns the app and label of a mint request body, or an error message.
 ///
-/// An empty body means no label. Labels longer than [`MAX_LABEL`] characters or containing
-/// control characters are refused.
-pub fn mint_label(body: &str) -> Result<String, String> {
+/// An empty body names no app and no label. Labels longer than [`MAX_LABEL`] characters or
+/// containing control characters are refused.
+pub fn mint_body(body: &str) -> Result<(Option<String>, String), String> {
     if body.trim().is_empty() {
-        return Ok(String::new());
+        return Ok((None, String::new()));
     }
     let b: MintBody = serde_json::from_str(body)
-        .map_err(|e| format!("body must be JSON {{\"label\":…}}: {e}"))?;
+        .map_err(|e| format!("body must be JSON {{\"app\":…, \"label\":…}}: {e}"))?;
     let label = b.label.unwrap_or_default().trim().to_string();
     if label.chars().count() > MAX_LABEL {
         return Err(format!("label longer than {MAX_LABEL} characters"));
@@ -70,7 +77,7 @@ pub fn mint_label(body: &str) -> Result<String, String> {
     if label.chars().any(char::is_control) {
         return Err("label contains control characters".to_string());
     }
-    Ok(label)
+    Ok((b.app, label))
 }
 
 /// Escapes text for HTML element content and quoted attribute values.
@@ -110,14 +117,14 @@ pub fn utc(ms: i64) -> String {
     )
 }
 
-/// Renders the list page.
-pub fn page(entries: &[Entry]) -> String {
+/// Renders the list page. `join_hint(app, id)` is the command shown for an endpoint.
+pub fn page(entries: &[Entry], join_hint: impl Fn(&str, &str) -> String) -> String {
     let mut out = String::from(PAGE_HEAD);
     if entries.is_empty() {
         out.push_str("<p>No endpoints yet.</p>\n");
     } else {
         out.push_str(
-            "<table>\n<tr><th>Label</th><th>Endpoint</th><th>Minted</th><th>Join</th><th>Status</th></tr>\n",
+            "<table>\n<tr><th>Label</th><th>App</th><th>Endpoint</th><th>Minted</th><th>Join</th><th>Status</th></tr>\n",
         );
         for e in entries {
             let id = html_escape(&e.id);
@@ -126,10 +133,12 @@ pub fn page(entries: &[Entry]) -> String {
             } else {
                 html_escape(&e.label)
             };
+            let app = html_escape(&e.app);
+            let hint = html_escape(&join_hint(&e.app, &e.id));
             let _ = writeln!(
                 out,
-                "<tr><td>{label}</td><td><code>{id}</code> <button data-copy=\"{id}\">copy</button></td>\
-                 <td>{}</td><td><code>iroh-do-chat {id}</code></td>\
+                "<tr><td>{label}</td><td>{app}</td><td><code>{id}</code> <button data-copy=\"{id}\">copy</button></td>\
+                 <td>{}</td><td><code>{hint}</code></td>\
                  <td><button data-status=\"{id}\">show</button> <span class=status></span></td></tr>",
                 utc(e.minted_at)
             );
@@ -150,9 +159,8 @@ table{border-collapse:collapse}td,th{padding:.3em .6em;text-align:left;vertical-
 tr+tr{border-top:1px solid #8884}code{font-size:13px;word-break:break-all}.dim{opacity:.6}
 </style></head><body>
 <h1>iroh-do endpoints</h1>
-<p>Each endpoint is an iroh endpoint hosted in a Cloudflare Durable Object and runs a chat
-room. Anyone who knows an endpoint's id can join its room. Status wakes the endpoint's
-object.</p>
+<p>Each endpoint is an iroh endpoint hosted in a Cloudflare Durable Object, running one app.
+Anyone who knows an endpoint's id can connect to it. Status wakes the endpoint's object.</p>
 ";
 
 const PAGE_TAIL: &str = "<script>
@@ -165,7 +173,9 @@ document.addEventListener('click', async (ev) => {
     try {
       const r = await fetch('/status/' + b.dataset.status);
       const s = await r.json();
-      out.textContent = `${s.state}, ${s.present} of ${s.members} members present, ${s.records} records`;
+      const core = ['id', 'app', 'state', 'wakes', 'endpoint_builds', 'connections', 'bundle', 'since_wake_ms'];
+      const extra = Object.entries(s).filter(([k]) => !core.includes(k)).map(([k, v]) => `${k} ${v}`);
+      out.textContent = [s.state, `${s.wakes} wakes`, ...extra].join(', ');
     } catch (e) { out.textContent = 'unavailable'; }
   }
 });
@@ -182,10 +192,12 @@ mod tests {
     fn page_escapes_labels() {
         let e = Entry {
             id: "ybndrfg8".into(),
+            app: "chat".into(),
             label: "<script>alert('x')</script> & \"q\"".into(),
             minted_at: 0,
         };
-        let html = page(&[e]);
+        let html = page(&[e], |_, id| format!("join {id}"));
+        assert!(html.contains("<code>join ybndrfg8</code>"), "{html}");
         assert!(!html.contains("<script>alert"), "{html}");
         assert!(
             html.contains("&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt; &amp; &quot;q&quot;")
@@ -198,17 +210,19 @@ mod tests {
     }
 
     #[test]
-    fn labels() {
-        assert_eq!(mint_label("").unwrap(), "");
-        assert_eq!(mint_label("{}").unwrap(), "");
+    fn mint_bodies() {
+        let label = |b: &str| mint_body(b).map(|(_, l)| l);
+        assert_eq!(mint_body("").unwrap(), (None, String::new()));
+        assert_eq!(label("{}").unwrap(), "");
+        assert_eq!(label(r#"{"label":" ana's room "}"#).unwrap(), "ana's room");
+        assert!(label(&format!(r#"{{"label":"{}"}}"#, "é".repeat(65))).is_err());
+        assert!(label(&format!(r#"{{"label":"{}"}}"#, "é".repeat(64))).is_ok());
+        assert!(label(r#"{"label":"a\nb"}"#).is_err());
+        assert!(label("label=x").is_err());
         assert_eq!(
-            mint_label(r#"{"label":" ana's room "}"#).unwrap(),
-            "ana's room"
+            mint_body(r#"{"app":"echo"}"#).unwrap(),
+            (Some("echo".to_string()), String::new())
         );
-        assert!(mint_label(&format!(r#"{{"label":"{}"}}"#, "é".repeat(65))).is_err());
-        assert!(mint_label(&format!(r#"{{"label":"{}"}}"#, "é".repeat(64))).is_ok());
-        assert!(mint_label(r#"{"label":"a\nb"}"#).is_err());
-        assert!(mint_label("label=x").is_err());
     }
 
     #[test]

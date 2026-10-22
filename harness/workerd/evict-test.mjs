@@ -33,8 +33,8 @@ const bundle = join(repo, "build", "worker");
 const demoBin = process.env.IROH_DO_DEMO ?? join(repo, "target", "debug", "iroh-do-chat");
 const port = Number(process.env.PORT ?? 8817);
 const ADMIN_TOKEN = "evict-test-token";
-const SCRIPT = "iroh-do-chat";
-const CLASS = "room";
+const SCRIPT = "iroh-do";
+const CLASS = "endpoint";
 const T_SETTLE_MS = 12_500; // T_idle (10 s) + T_linger (2 s): long enough to reach Warm
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -106,7 +106,7 @@ const mf = new Miniflare({
           },
         },
         env: {
-          ROOMS: { type: "durable-object", worker: SCRIPT, exportName: CLASS }, REGISTRY: { type: "durable-object", worker: SCRIPT, exportName: "registry" },
+          ENDPOINTS: { type: "durable-object", worker: SCRIPT, exportName: CLASS }, REGISTRY: { type: "durable-object", worker: SCRIPT, exportName: "registry" },
           ZONE_SUFFIX: text("localhost"),
           ADMIN_TOKEN: text(ADMIN_TOKEN),
           PKARR_RELAY: text(""), // no publishing from tests; the peer dials the relay URL directly
@@ -185,7 +185,7 @@ let ctl;
 try {
   await mf.ready;
   const base = `http://127.0.0.1:${port}`;
-  const ns = await mf.getDurableObjectNamespace("ROOMS");
+  const ns = await mf.getDurableObjectNamespace("ENDPOINTS");
 
   // An upgrade to an unminted (valid z32) name must not write any storage.
   const unminted = "yr9ge793ppirfkkm4edbyu56mbnctp4i9xsf3468xsda9o8cuo6o";

@@ -1,7 +1,7 @@
 # Building the iroh-do Worker bundle
 
-The bundle is one Worker script, `iroh-do-chat`: the router `fetch` handler
-and the Durable Object classes `room` (one object per endpoint) and `registry`
+The bundle is one Worker script, `iroh-do`: the router `fetch` handler
+and the Durable Object classes `endpoint` (one object per endpoint) and `registry`
 (spec §13.2, design note 009). `wrangler dev` runs it locally
 (`harness/workerd/`) and OpenTofu uploads the same files to production
 (`infra/`).
@@ -9,7 +9,7 @@ and the Durable Object classes `room` (one object per endpoint) and `registry`
 ## Command
 
 ```sh
-crates/iroh-do/build-worker.sh        # or: just build-worker
+crates/iroh-do-worker/build-worker.sh        # or: just build-worker
 ```
 
 Requirements: Rust 1.93.0 with `wasm32-unknown-unknown` (`rust-toolchain.toml`),
@@ -44,7 +44,7 @@ alias and `package.json`, which are not part of the upload.
 
 | Name | Type | Value |
 |---|---|---|
-| `ROOMS` | Durable Object namespace | class `room` |
+| `ENDPOINTS` | Durable Object namespace | class `endpoint` |
 | `REGISTRY` | Durable Object namespace | class `registry` (design note 009) |
 | `ZONE_SUFFIX` | plain text | e.g. `iroh-do.example.com`; `localhost` locally |
 | `ADMIN_TOKEN` | secret | bearer token for `POST admin.<zone>/mint`; unset or empty disables minting |
@@ -52,11 +52,11 @@ alias and `package.json`, which are not part of the upload.
 | `BUNDLE_SHA256` | plain text | contents of `build/worker/BUNDLE_SHA256`, reported by `/status` on `iroh-do/ctl/1` |
 | `LOG_LEVEL` | plain text | optional, `tracing` filter directives for the JSON logs; default `info,iroh=warn,noq=warn,netwatch=error,iroh_do=info` (design note 010) |
 
-Durable Object classes: one migration, `v1`, declares `room` and `registry` as
+Durable Object classes: one migration, `v1`, declares `endpoint` and `registry` as
 `new_sqlite_classes`. workers-rs 0.8.7's `#[durable_object]` exports the class
 under the Rust type's name and has no `js_name` option, so the Rust types are
 lowercase (`#[allow(non_camel_case_types)]`). Cloudflare names a namespace
-`<script>_<class>`, here `iroh-do-chat_room` and `iroh-do-chat_registry`
+`<script>_<class>`, here `iroh-do_endpoint` and `iroh-do_registry`
 (design note 010). The SQLite schema inside each object has no migrations and
 is created as is. Compatibility date: `2026-09-15`, the newest that wrangler
 4.130.0's workerd accepts.

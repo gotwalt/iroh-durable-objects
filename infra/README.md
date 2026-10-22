@@ -1,9 +1,9 @@
 # infra/: OpenTofu module for the example deployment
 
 This module deploys the iroh-do Worker to a Cloudflare zone. One Worker script,
-`iroh-do-chat`, contains the router and two Durable Object classes: `room`, one
+`iroh-do`, contains the router and two Durable Object classes: `endpoint`, one
 object per endpoint, and `registry`, the endpoint list. Cloudflare names their
-namespaces `iroh-do-chat_room` and `iroh-do-chat_registry`. Each endpoint
+namespaces `iroh-do_endpoint` and `iroh-do_registry`. Each endpoint
 `E` is served at `https://<E>.iroh-do.<zone>/`. The design is in `docs/spec.md`
 §13 and design notes 001 and 002.
 
@@ -15,10 +15,10 @@ deletes all of them, and they cannot be recovered (see [Teardown](#teardown)).
 ## What it creates
 
 - `cloudflare_workers_script.iroh_do`: the bundle (`index.js` as the main
-  module, `index_bg.wasm` imported by it), the bindings `ROOMS` (the `room`
+  module, `index_bg.wasm` imported by it), the bindings `ENDPOINTS` (the `endpoint`
   namespace), `REGISTRY` (the `registry` namespace), `ADMIN_TOKEN` (secret),
   `ZONE_SUFFIX`, `BUNDLE_SHA256`, `PKARR_RELAY` and `LOG_LEVEL`, the Durable
-  Object migration `v1` (`new_sqlite_classes = ["room", "registry"]`), and
+  Object migration `v1` (`new_sqlite_classes = ["endpoint", "registry"]`), and
   Workers Logs and traces (`observability`).
 - `cloudflare_dns_record.wildcard`: a proxied `AAAA 100::` record for
   `*.iroh-do.<zone>`. It only makes the names resolve to Cloudflare; the route

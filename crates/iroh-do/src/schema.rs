@@ -3,8 +3,8 @@
 //! The text lives here, outside the wasm32-only glue, so that native tests can run it against
 //! SQLite. Tables:
 //!
-//! - `identity`: one row, written once at mint: the secret key (hex), the relay URL and the
-//!   pkarr relay it was minted with.
+//! - `identity`: one row, written once at mint: the app the endpoint runs, the secret key
+//!   (hex), the relay URL and the pkarr relay it was minted with.
 //! - `counters`: named integers. `wakes` (constructor runs) and `endpoint_builds`
 //!   (`Endpoint` instantiations), reported in the endpoint's status; `registered`, set once
 //!   the registry has the endpoint.
@@ -21,6 +21,7 @@
 pub const SCHEMA: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS identity(
         k INTEGER PRIMARY KEY CHECK (k = 1),
+        app TEXT NOT NULL,
         secret_hex TEXT NOT NULL,
         relay_url TEXT NOT NULL,
         pkarr_relay TEXT NOT NULL,

@@ -8,18 +8,19 @@
 //! as `POST https://do/_internal/mint`, a path the router refuses from outside.
 
 use iroh_base::SecretKey;
+use iroh_do_core::AppEntry;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 use worker::{Env, Headers, Method, Request, RequestInit, Response, Result};
 
 use super::registry;
 use crate::{
-    registry::{mint_label, page},
+    registry::{mint_body, page},
     route::{self, Probe, Route},
 };
 
-/// Durable Object namespace binding of the `room` class (one object per endpoint).
-pub const ROOMS_BINDING: &str = "ROOMS";
+/// Durable Object namespace binding of the `endpoint` class (one object per endpoint).
+pub const ENDPOINTS_BINDING: &str = "ENDPOINTS";
 /// Internal mint path, reachable only through a DO stub.
 pub const INTERNAL_MINT: &str = "/_internal/mint";
 /// Internal status path of an endpoint object: its `/status` JSON, or 404 if unminted.
@@ -36,6 +37,8 @@ pub const DEFAULT_PKARR_RELAY: &str = "https://dns.iroh.link/pkarr";
 /// Router → DO mint request body.
 #[derive(Serialize, Deserialize)]
 pub struct MintRequest {
+    /// Name of the app the endpoint runs.
+    pub app: String,
     /// Secret key, lowercase hex. Never logged.
     pub secret_hex: String,
     /// Relay URL to publish and return.
@@ -61,6 +64,8 @@ pub struct DestroyResponse {
 pub struct MintResponse {
     /// EndpointId, z-base-32.
     pub id: String,
+    /// Name of the app the endpoint runs.
+    pub app: String,
     /// Relay URL (= home relay advertised for `id`).
     pub relay_url: String,
     /// Whether the pkarr record was published and confirmed by GET.
@@ -71,8 +76,10 @@ fn var(env: &Env, name: &str) -> Option<String> {
     env.var(name).ok().map(|v| v.to_string())
 }
 
-/// The router entry point.
-pub async fn handle(req: Request, env: Env) -> Result<Response> {
+/// The Worker's `fetch` handler, for a deployment built with `apps`.
+pub async fn handle(req: Request, env: Env, apps: &'static [AppEntry]) -> Result<Response> {
+    super::logging::install(&env);
+    super::timers::install();
     let Some(zone) = var(&env, "ZONE_SUFFIX") else {
         error!(event = "config_error", missing = "ZONE_SUFFIX");
         return Response::error("misconfigured", 500);
@@ -93,15 +100,18 @@ pub async fn handle(req: Request, env: Env) -> Result<Response> {
     ) {
         Route::Relay(id) => {
             let stub = env
-                .durable_object(ROOMS_BINDING)?
+                .durable_object(ENDPOINTS_BINDING)?
                 .id_from_name(&id.to_z32())?
                 .get_stub()?;
             stub.fetch_with_request(req).await
         }
-        Route::Mint => mint(req, &env, &zone).await,
+        Route::Mint => mint(req, &env, &zone, apps).await,
         Route::Destroy(id) => destroy(req, &env, &id.to_z32()).await,
         Route::ListPage => {
-            let html = page(&registry::list(&env).await?);
+            let hint = |app: &str, id: &str| {
+                AppEntry::find(apps, app).map_or_else(|| id.to_string(), |a| (a.join_hint)(id))
+            };
+            let html = page(&registry::list(&env).await?, hint);
             let h = Headers::new();
             h.set("content-type", "text/html; charset=utf-8")?;
             Ok(Response::ok(html)?.with_headers(h))
@@ -109,7 +119,7 @@ pub async fn handle(req: Request, env: Env) -> Result<Response> {
         Route::ListJson => Response::from_json(&registry::list(&env).await?),
         Route::Status(id) => {
             let stub = env
-                .durable_object(ROOMS_BINDING)?
+                .durable_object(ENDPOINTS_BINDING)?
                 .id_from_name(&id.to_z32())?
                 .get_stub()?;
             stub.fetch_with_str(&format!("https://do{INTERNAL_STATUS}"))
@@ -171,7 +181,7 @@ async fn destroy(req: Request, env: &Env, id: &str) -> Result<Response> {
     init.with_method(Method::Post).with_headers(headers);
     let inner = Request::new_with_init(&format!("https://do{INTERNAL_DESTROY}"), &init)?;
     let stub = env
-        .durable_object(ROOMS_BINDING)?
+        .durable_object(ENDPOINTS_BINDING)?
         .id_from_name(id)?
         .get_stub()?;
     let resp = stub.fetch_with_request(inner).await?;
@@ -194,14 +204,28 @@ async fn destroy(req: Request, env: &Env, id: &str) -> Result<Response> {
     })
 }
 
-async fn mint(mut req: Request, env: &Env, zone: &str) -> Result<Response> {
+async fn mint(
+    mut req: Request,
+    env: &Env,
+    zone: &str,
+    apps: &'static [AppEntry],
+) -> Result<Response> {
     if let Some(denied) = admin_auth(&req, env)? {
         return Ok(denied);
     }
 
-    let label = match mint_label(&req.text().await?) {
-        Ok(l) => l,
+    let (app, label) = match mint_body(&req.text().await?) {
+        Ok(b) => b,
         Err(e) => return Response::error(e, 400),
+    };
+    // No app named: the deployment's first.
+    let app = match app {
+        None => apps.first().copied(),
+        Some(name) => AppEntry::find(apps, &name),
+    };
+    let Some(app) = app else {
+        let names: Vec<_> = apps.iter().map(|a| a.name).collect();
+        return Response::error(format!("unknown app; this deployment has {names:?}"), 400);
     };
 
     // Generated in the isolate (crypto.getRandomValues). The secret travels only
@@ -212,6 +236,7 @@ async fn mint(mut req: Request, env: &Env, zone: &str) -> Result<Response> {
     let relay_url = route::relay_url_for(&id, url.scheme(), zone, url.port());
     let pkarr_relay = var(env, "PKARR_RELAY").unwrap_or_else(|| DEFAULT_PKARR_RELAY.to_string());
     let body = MintRequest {
+        app: app.name.to_string(),
         secret_hex: data_encoding::HEXLOWER.encode(&secret.to_bytes()),
         relay_url,
         pkarr_relay,
@@ -226,7 +251,7 @@ async fn mint(mut req: Request, env: &Env, zone: &str) -> Result<Response> {
         .with_body(Some(serde_json::to_string(&body)?.into()));
     let inner = Request::new_with_init(&format!("https://do{INTERNAL_MINT}"), &init)?;
     let stub = env
-        .durable_object(ROOMS_BINDING)?
+        .durable_object(ENDPOINTS_BINDING)?
         .id_from_name(&id.to_z32())?
         .get_stub()?;
     stub.fetch_with_request(inner).await

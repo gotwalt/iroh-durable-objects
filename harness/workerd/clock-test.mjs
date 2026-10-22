@@ -106,13 +106,13 @@ async function measure(readOnlySetTimeout) {
   const mf = new Miniflare({
     host: "127.0.0.1", port, resourcePersistencePath: persist,
     workers: [{ config: {
-      name: "iroh-do-chat", type: "worker", compatibilityDate: "2026-09-15",
+      name: "iroh-do", type: "worker", compatibilityDate: "2026-09-15",
       manifest: { mainModule: "index.js", modules: {
         "index.js": { type: "esm", contents: js },
         "index_bg.wasm": { type: "wasm", contents: new Uint8Array(readFileSync(join(bundle, "index_bg.wasm"))) } } },
-      env: { ROOMS: { type: "durable-object", worker: "iroh-do-chat", exportName: "room" }, REGISTRY: { type: "durable-object", worker: "iroh-do-chat", exportName: "registry" },
+      env: { ENDPOINTS: { type: "durable-object", worker: "iroh-do", exportName: "endpoint" }, REGISTRY: { type: "durable-object", worker: "iroh-do", exportName: "registry" },
         ZONE_SUFFIX: text("localhost"), ADMIN_TOKEN: text(ADMIN_TOKEN), PKARR_RELAY: text(""), BUNDLE_SHA256: text("clock-test") },
-      exports: { room: { type: "durable-object", storage: "sqlite" }, registry: { type: "durable-object", storage: "sqlite" } } } }],
+      exports: { endpoint: { type: "durable-object", storage: "sqlite" }, registry: { type: "durable-object", storage: "sqlite" } } } }],
   });
   const clk = async () => (await (await mf.dispatchFetch(`http://127.0.0.1:${port}/__clk`)).json());
   try {

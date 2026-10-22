@@ -31,16 +31,16 @@ const text = (value) => ({ type: "text", value });
 const start = () => new Miniflare({
   host: "127.0.0.1", port, resourcePersistencePath: persistDir,
   workers: [{ config: {
-    name: "iroh-do-chat", type: "worker", compatibilityDate: "2026-09-15",
+    name: "iroh-do", type: "worker", compatibilityDate: "2026-09-15",
     manifest: { mainModule: "index.js", modules: {
       "index.js": { type: "esm", contents: readFileSync(join(bundle, "index.js"), "utf8") },
       "index_bg.wasm": { type: "wasm", contents: new Uint8Array(readFileSync(join(bundle, "index_bg.wasm"))) } } },
     env: {
-      ROOMS: { type: "durable-object", worker: "iroh-do-chat", exportName: "room" },
-      REGISTRY: { type: "durable-object", worker: "iroh-do-chat", exportName: "registry" },
+      ENDPOINTS: { type: "durable-object", worker: "iroh-do", exportName: "endpoint" },
+      REGISTRY: { type: "durable-object", worker: "iroh-do", exportName: "registry" },
       ZONE_SUFFIX: text("localhost"), ADMIN_TOKEN: text(ADMIN_TOKEN), PKARR_RELAY: text(""), BUNDLE_SHA256: text("registry-test") },
     exports: {
-      room: { type: "durable-object", storage: "sqlite" },
+      endpoint: { type: "durable-object", storage: "sqlite" },
       registry: { type: "durable-object", storage: "sqlite" } } } }],
 });
 const admin = (path, init) => mf.dispatchFetch(`http://admin.localhost:${port}${path}`, init);
@@ -52,7 +52,7 @@ const mint = async (body) => {
 };
 const list = async () => (await (await admin("/endpoints.json")).json());
 const sqliteFile = async (cls, name) => {
-  const ns = await mf.getDurableObjectNamespace(cls === "registry" ? "REGISTRY" : "ROOMS");
+  const ns = await mf.getDurableObjectNamespace(cls === "registry" ? "REGISTRY" : "ENDPOINTS");
   const id = ns.idFromName(name).toString();
   const f = readdirSync(persistDir, { recursive: true }).find((x) => x.endsWith(`${id}.sqlite`));
   return f && join(persistDir, f);
@@ -98,14 +98,14 @@ try {
   const unminted = "yr9ge793ppirfkkm4edbyu56mbnctp4i9xsf3468xsda9o8cuo6o";
   const su = await admin(`/status/${unminted}`);
   check("/status/<unminted> is 404", su.status === 404, String(su.status));
-  const ut = tablesOf(await sqliteFile("room", unminted));
+  const ut = tablesOf(await sqliteFile("endpoint", unminted));
   check("unminted status request wrote no storage", ut.length === 0, JSON.stringify(ut));
   check("/status/<not z32> is 404", (await admin("/status/registry")).status === 404);
 
   // Backfill: forget `b` in the registry and in its own flag, as for an endpoint minted
   // before the registry existed.
   const regFile = await sqliteFile("registry", "registry");
-  const bFile = await sqliteFile("room", b);
+  const bFile = await sqliteFile("endpoint", b);
   await mf.dispose();
   const reg = new DatabaseSync(regFile);
   reg.prepare("DELETE FROM endpoints WHERE id = ?").run(b);

@@ -44,7 +44,7 @@ cleanup() {
 trap cleanup EXIT
 
 if [[ $build -eq 1 || ! -f "$repo/build/worker/index_bg.wasm" ]]; then
-  "$repo/crates/iroh-do/build-worker.sh"
+  "$repo/crates/iroh-do-worker/build-worker.sh"
 fi
 (cd "$repo" && cargo build -q -p iroh-do-demo)
 demo="$repo/target/debug/iroh-do-chat"

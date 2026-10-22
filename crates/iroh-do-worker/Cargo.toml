@@ -1,0 +1,20 @@
+[package]
+name = "iroh-do-worker"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "This repository's iroh-do deployment: the Worker script `iroh-do` with the chat app"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+iroh-do = { path = "../iroh-do" }
+iroh-do-chat-app = { path = "../../apps/chat" }
+
+# `worker!` expands to workers-rs macros, which name these crates by absolute path.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+worker = { workspace = true }
+wasm-bindgen = "=0.2.129"

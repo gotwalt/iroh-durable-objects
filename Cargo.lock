@@ -1660,7 +1660,6 @@ dependencies = [
  "getrandom 0.4.3",
  "iroh-base",
  "iroh-dns",
- "iroh-do-chat-app",
  "iroh-do-core",
  "iroh-relay-ingress",
  "js-sys",
@@ -1739,6 +1738,16 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "iroh-do-worker"
+version = "0.1.0"
+dependencies = [
+ "iroh-do",
+ "iroh-do-chat-app",
+ "wasm-bindgen",
+ "worker",
 ]
 
 [[package]]

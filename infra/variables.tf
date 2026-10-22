@@ -35,9 +35,9 @@ variable "hostname_prefix" {
 }
 
 variable "script_name" {
-  description = "Worker script name. Durable Object namespaces are named <script_name>_room and <script_name>_registry. Renaming it creates new namespaces: every existing endpoint identity is lost."
+  description = "Worker script name. Durable Object namespaces are named <script_name>_endpoint and <script_name>_registry. Renaming it creates new namespaces: every existing endpoint identity is lost."
   type        = string
-  default     = "iroh-do-chat"
+  default     = "iroh-do"
 }
 
 variable "worker_bundle_dir" {
