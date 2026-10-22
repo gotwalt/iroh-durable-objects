@@ -360,6 +360,10 @@ the dial-back.
   streams and connections).
 - That `present` is current: it is read when the line is built.
 - That connections stay open: the object closes idle ones.
+- A reply to every room request. When handling a request fails for a reason other
+  than a failed write to the log (`storage error`), the object cannot tell whether
+  the request took effect, so it resets the request stream instead of replying. A
+  member that sees the reset finds out with `/since`.
 - That the rate limit survives an eviction of the object (it is in memory).
 - That `ts` is monotonic or that events with higher `seq` have a later `ts`.
 - The values of `/status` fields other than their types and the app's own fields.

@@ -60,6 +60,18 @@ interface Outbox {
 
 type Via = "open" | "dial" | "none";
 
+/** A request's replies, and the member's nick after it for the log. */
+interface Handled {
+  replies: RoomLine[];
+  nick: string;
+}
+
+/**
+ * The application error code of a request stream the object resets because handling the
+ * request failed (PROTOCOL.md, "Not guaranteed").
+ */
+const REQUEST_FAILED = 1n;
+
 export class Room {
   readonly stats: RoomStats = {
     deliveriesOk: 0,
@@ -123,34 +135,46 @@ export class Room {
     const bytes = await stream.recv.readToEnd(MAX_REQUEST_STREAM).catch(unlessTrap(null));
     const replies = bytes === null ? [errorLine(ROOM_ERRORS.unreadable)] : this.#handleBytes(peer, bytes);
     try {
-      await stream.send.writeAll(encodeUtf8(encodeLines(replies)));
-      await stream.send.finish();
+      if (replies === null) {
+        await stream.send.reset(REQUEST_FAILED);
+      } else {
+        await stream.send.writeAll(encodeUtf8(encodeLines(replies)));
+        await stream.send.finish();
+      }
     } catch (error) {
       rethrowTrap(error);
       // The member closed the connection or reset the stream: the reply cannot reach it.
     }
   }
 
-  /** Frames, parses and handles one request; logs it as `room_request`, without its text. */
-  #handleBytes(peer: string, bytes: Uint8Array): RoomLine[] {
-    const frame = frameRequest(bytes);
-    // Framing errors are answered before the rate limit, and are not counted against it.
-    if (!frame.ok) return [errorLine(frame.error)];
-    const request = parseRoomRequest(frame.line);
-    const replies = this.#respond(peer, request);
-    this.#log.info("room_request", {
-      peer,
-      kind: requestKind(request),
-      nick: this.#storage.member(peer)?.nick ?? "",
-      ok: replies[0]?.t !== "err",
-    });
-    return replies;
+  /**
+   * Frames, parses and handles one request; logs it as `room_request`, without its text.
+   * Returns null if handling it failed other than by a rolled-back write: whether it stored
+   * anything is then unknown, so no reply claims either, and the caller resets the stream.
+   */
+  #handleBytes(peer: string, bytes: Uint8Array): RoomLine[] | null {
+    let kind = "unknown";
+    try {
+      const frame = frameRequest(bytes);
+      // Framing errors are answered before the rate limit, and are not counted against it.
+      if (!frame.ok) return [errorLine(frame.error)];
+      const request = parseRoomRequest(frame.line);
+      kind = requestKind(request);
+      const { replies, nick } = this.#respond(peer, request);
+      this.#log.info("room_request", { peer, kind, nick, ok: replies[0]?.t !== "err" });
+      return replies;
+    } catch (error) {
+      rethrowTrap(error);
+      const stack = error instanceof Error && error.stack !== undefined ? error.stack : "";
+      this.#log.error("room_request_failed", { peer, kind, error: errorText(error), stack });
+      return null;
+    }
   }
 
-  #respond(peer: string, request: RoomRequest): RoomLine[] {
+  #respond(peer: string, request: RoomRequest): Handled {
     if (!this.#limiter.allow(peer, Date.now())) {
       this.stats.rateLimited++;
-      return [errorLine(ROOM_ERRORS.rateLimited)];
+      return { replies: [errorLine(ROOM_ERRORS.rateLimited)], nick: "" };
     }
     try {
       return this.#handle(peer, request);
@@ -159,12 +183,17 @@ export class Room {
       // it again. Anything else is not answered as if nothing happened.
       if (!(error instanceof StorageError)) throw error;
       this.#log.error("room_request_failed", { peer, kind: requestKind(request), error: errorText(error) });
-      return [errorLine(ROOM_ERRORS.storage)];
+      return { replies: [errorLine(ROOM_ERRORS.storage)], nick: "" };
     }
   }
 
-  #handle(peer: string, request: RoomRequest): RoomLine[] {
+  #handle(peer: string, request: RoomRequest): Handled {
     const member = this.#storage.member(peer);
+    const replies = this.#dispatch(peer, member, request);
+    return { replies, nick: nickAfter(member, request, replies) };
+  }
+
+  #dispatch(peer: string, member: Member | null, request: RoomRequest): RoomLine[] {
     if (request.command === "join") return this.#join(peer, member, request.nick);
     if (member === null || !member.joined) return [errorLine(ROOM_ERRORS.notJoined)];
     switch (request.command) {
@@ -391,6 +420,14 @@ export class Room {
     if (this.#connections.get(peer) === conn) this.#connections.delete(peer);
     return undefined;
   }
+}
+
+/** The member's nick once `request` has been handled, for the log; empty if it has none. */
+function nickAfter(member: Member | null, request: RoomRequest, replies: readonly RoomLine[]): string {
+  const last = replies.at(-1);
+  if (last?.t === "ready") return last.you.nick;
+  if (request.command === "nick" && last?.t === "ok") return request.nick;
+  return member?.nick ?? "";
 }
 
 function historyOf(record: RoomRecord): RoomLine {
