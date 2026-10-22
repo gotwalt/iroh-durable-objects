@@ -40,6 +40,39 @@ Two modules are uploaded: `index.js` as the main module
 which `index.js` imports. The script deletes worker-build's `worker/shim.mjs`
 alias and `package.json`, which are not part of the upload.
 
+## TypeScript host bundle
+
+The TypeScript host (design note 013) is built by wrangler instead of
+worker-build. The echo server's build (`npm --prefix examples/echo/server run
+build`, called by `just build-ts`) runs `wrangler deploy --dry-run --outdir
+dist` and writes `manifest.json` next to the output; `just build-ts` copies
+the directory to `build/echo-ts/`:
+
+```
+build/echo-ts/
+  worker.js                              # ESM main module; imports "./<hash>-iroh_do_wasm_bg.wasm"
+  <hash>-iroh_do_wasm_bg.wasm            # named by wrangler after the wasm's content hash
+  manifest.json
+```
+
+```json
+{ "main_module": "worker.js",
+  "modules": [ { "name": "<hash>-iroh_do_wasm_bg.wasm",
+                 "path": "<hash>-iroh_do_wasm_bg.wasm",
+                 "content_type": "application/wasm" } ],
+  "bundle_sha256": "<hex>" }
+```
+
+`path` is relative to the manifest's directory; the main module is listed
+only as `main_module`. `name` is the part name OpenTofu uploads and must equal
+the import specifier in the main module without its `./`. `deploy/tofu` reads
+the manifest through its `worker_manifest` input (`deploy/tofu/README.md`),
+binds `bundle_sha256` as `BUNDLE_SHA256`, and checks the names against the main
+module at plan time. `just bundle-info-ts` prints the hash and sizes.
+
+The worker-build instructions above stay in force for the Rust deployment
+(`module.iroh_do`) until it is retired.
+
 ## Bindings
 
 | Name | Type | Value |
