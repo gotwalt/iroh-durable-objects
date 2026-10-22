@@ -1,8 +1,9 @@
 # 013: TypeScript owns the Durable Object; Rust is a wasm library
 
-**Status:** proposed (2026-10-22). Replaces the app API of 011 and the glue
-layout of 011 and 012. Narrows P5's explicit-clock claim in `spec.md` §1,
-which needs review. Evidence: `docs/verification/ts-host.md`.
+**Status:** accepted (2026-10-22). Replaces the app API of 011 and the glue
+layout of 011 and 012. Narrows the explicit-clock claim of the sans-io
+principle (P5 in `spec.md` §1), as the maintainer accepted; `spec.md` carries
+the new wording. Evidence: `docs/verification/ts-host.md`.
 
 iroh-do is a feasibility study. This change keeps no compatibility with the
 current deployment.
@@ -170,9 +171,11 @@ connection is dropped rather than left stalled.
 
 ## Consequences
 
-- **Removed:** `crates/iroh-do` (`glue/`, the `worker!` macro, router), the
-  `App` trait and `AppEntry` of 011, `examples/deployment` as a Rust crate,
-  worker-build and `deploy/build-worker.sh`.
+- **Planned for step 3, not done:** removing `crates/iroh-do` (`glue/`, the
+  `worker!` macro, router), the `App` trait and `AppEntry` of 011,
+  `examples/deployment` as a Rust crate, worker-build and
+  `deploy/build-worker.sh`. After step 2 all of these still exist, and the Rust
+  deployment `module.iroh_do` still runs from them.
 - **An app is chosen per deployment, not per endpoint** (011, decision 2): each
   app is a DO class, and its Worker binds that class. One deployment can still
   export several classes. The router then needs `E → class`, which mint
@@ -221,9 +224,14 @@ connection is dropped rather than left stalled.
 - **Examples:**
   - `examples/echo` becomes a TypeScript class.
   - `examples/chat/server` becomes a TypeScript class. *Done in step 2*: class
-    `Chat`, a port of `examples/chat/app` with the same replies, limits,
-    error strings, log records and SQL. It schedules dial-backs and the log
-    prune through `schedule` and `onAlarm`, and adds `records`, `members` and
+    `Chat`, which implements `examples/chat/common/PROTOCOL.md` as the Rust
+    app does, with the same tables. The specification, not the Rust code, is
+    the reference: rules that only described Rust's standard library
+    (argument trimming, integer parsing) were restated so that both servers
+    follow one plain rule (PROTOCOL.md, "Changes"). The class builds its
+    storage and protocol handlers once per construction and creates its
+    tables in the constructor. It schedules dial-backs and the log prune
+    through `schedule` and `onAlarm`, and adds `records`, `members` and
     `present` to the status through `appStatus`, the base class's equivalents
     of `Ctx::schedule`, `App::on_alarm` and `App::status`. The Rust app stays
     deployed on the Rust host until step 3.

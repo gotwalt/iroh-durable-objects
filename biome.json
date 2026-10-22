@@ -1,0 +1,39 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
+  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+  "files": {
+    "includes": [
+      "examples/chat/server/**",
+      "packages/**",
+      "examples/echo/server/**",
+      "examples/ts-deployment/**",
+      "!**/worker-configuration.d.ts",
+      "!packages/iroh-do/types",
+      "!packages/*/dist",
+      "!packages/iroh-do/pkg",
+      "!packages/iroh-do/pkg-test"
+    ]
+  },
+  "formatter": {
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 120
+  },
+  "linter": {
+    "rules": {
+      "preset": "recommended",
+      "nursery": {
+        "noFloatingPromises": "error",
+        "noMisusedPromises": "error"
+      },
+      "style": {
+        "noNonNullAssertion": "error",
+        "useConst": "error"
+      },
+      "suspicious": {
+        "noExplicitAny": "error",
+        "noEmptyBlockStatements": "error"
+      }
+    }
+  }
+}

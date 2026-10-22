@@ -8,6 +8,7 @@ server implementation runs them; the client checks its types against them.
 | Who | What | Where |
 |---|---|---|
 | Rust chat app | runs every fixture against the app in the native harness, with stock iroh peers | `examples/chat/app/tests/fixtures.rs` |
+| TypeScript chat object | the same runner, against `wrangler dev` of `examples/ts-deployment` (`FIXTURE_TARGET=<port>`, see the runner's header) | `examples/chat/app/tests/fixtures.rs` |
 | Rust chat client | parses every reply and event line with its own types and fails on a line it cannot parse or a field it drops; checks its request limits and nick rule against the requests | `examples/chat/client/src/fixtures_check.rs` |
 | Both | assert the ALPNs and limits in [`../constants.json`](../constants.json) | the same two files |
 

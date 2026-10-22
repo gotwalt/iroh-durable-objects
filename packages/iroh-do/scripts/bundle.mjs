@@ -53,7 +53,7 @@ if (features && !args.includes("--allow-test-features")) {
 }
 
 rmSync(outdir, { recursive: true, force: true });
-execFileSync("npx", ["wrangler", "deploy", "--dry-run", "--config", config, "--outdir", outdir], { stdio: "inherit" });
+execFileSync("npx", ["--no-install", "wrangler", "deploy", "--dry-run", "--config", config, "--outdir", outdir], { stdio: "inherit" });
 
 // wrangler names the bundled module after the config's `main`, with a .js extension.
 const mains = readdirSync(outdir).filter((f) => f.endsWith(".js"));

@@ -1,15 +1,19 @@
 # Chat protocols
 
 The wire definition of the four ALPNs that the chat object serves and uses:
-`iroh-do/room/1`, `iroh-do/ctl/1`, `iroh-do/echo/1` and `iroh-do/notify/1`. It
-describes what the Rust chat app (`examples/chat/app/src/{lib,room,ctl,store}.rs`)
-does, and where design note 008 and the code differ, the code is authoritative
-(see [Differences](#differences-from-design-note-008-and-between-implementations)).
-Every server implementation must match it, and every client must be able to talk
-to it. The golden fixtures in [`fixtures/`](fixtures/README.md) express the same
-behavior as scripted exchanges; the Rust app runs them in
-`examples/chat/app/tests/fixtures.rs` and the client checks its types against
-them in `examples/chat/client/src/fixtures_check.rs`.
+`iroh-do/room/1`, `iroh-do/ctl/1`, `iroh-do/echo/1` and `iroh-do/notify/1`. This
+document is the specification. Two servers implement it, the Rust chat app
+(`examples/chat/app`) and the TypeScript chat object (`examples/chat/server`);
+where a server differs from this document, the server is wrong. Every client must
+be able to talk to it. Where design note 008 and this document differ, this
+document holds (see
+[Differences](#differences-from-design-note-008-and-between-implementations)), and
+[Changes](#changes) lists the rules that were rewritten after the first
+implementation. The golden fixtures in [`fixtures/`](fixtures/README.md) express
+the same behavior as scripted exchanges; `examples/chat/app/tests/fixtures.rs` runs
+them against the Rust app, or against any server given `FIXTURE_TARGET`, and the
+client checks its types against them in
+`examples/chat/client/src/fixtures_check.rs`.
 [`constants.json`](constants.json) holds the ALPNs and limits that both sides
 duplicate; the app's test and the client's test each assert it.
 
@@ -25,9 +29,25 @@ z-base-32 form (`PublicKey::to_z32`), never the hex `Display` form.
 - A *line* is UTF-8 text ended by `\n`. Lines the object writes always end in
   exactly `\n`. JSON lines are one JSON value on one line; the object writes keys
   in the order shown below, but readers must not depend on it.
-- The object escapes `"`, `\` and characters below U+0020 (as `\u00XX`) in JSON
-  strings and writes everything else as raw UTF-8. Readers must accept any valid
-  JSON string encoding.
+- **Text.** The object decodes the bytes of a line as UTF-8 and refuses the line
+  if they are not valid UTF-8 (RFC 3629: no overlong forms, no surrogates). A byte
+  order mark is not special: a leading U+FEFF is a character of the line, so
+  `U+FEFF /who` is an unknown request.
+- **JSON strings** may use any escape JSON allows (RFC 8259 §7). Readers must
+  accept any valid JSON string encoding. The object never escapes characters
+  above U+007F, so text written in a request comes back as the same UTF-8.
+- **Integers** in JSON lines are between 0 and 2^53 − 1, so every JSON reader
+  holds them exactly (RFC 7493 §2.2). `seq` grows by one per record and `ts` is
+  milliseconds since 1970, so neither approaches the bound.
+- **White space** in arguments means ASCII white space: U+0009 TAB, U+000A LF,
+  U+000C FF, U+000D CR and U+0020 SPACE (the WHATWG Infra definition, Rust's
+  `u8::is_ascii_whitespace`). *Trimmed* means with leading and trailing white
+  space removed. Other characters, for example U+00A0 NO-BREAK SPACE, are kept.
+- A **number** argument is one or more ASCII digits `0`-`9` and nothing else: no
+  sign, no decimal point, no exponent, no digits of other scripts. Leading zeros
+  are allowed. Any number of digits is accepted, and each command states what a
+  value above its bound does, so an implementation never has to fit an arbitrary
+  value into an integer type.
 - A request that arrives on a stream, or a read that fails, is answered on the
   same stream. Which streams exist is defined per protocol below.
 - Any connection may be closed by the object when idle (`t_idle`, 10 s; design
@@ -79,10 +99,9 @@ count against it. An empty stream (zero bytes) is the empty line.
 
 The line is split at its first space (U+0020) into a command and an argument. A
 line without a space is a command with an empty argument. The argument is then
-trimmed of leading and trailing white space (Unicode `White_Space`, as Rust's
-`str::trim`). A command is matched exactly and is case-sensitive; only the space
-character separates it from its argument (`/say\thi` is the unknown command
-`/say\thi`).
+trimmed (see [Conventions](#conventions)). A command is matched exactly and is
+case-sensitive; only the space character separates it from its argument
+(`/say\thi` is the unknown command `/say\thi`).
 
 After the framing checks, every request is handled in this order:
 
@@ -122,7 +141,8 @@ only (`bob` to `BOB`) is a rename.
 
 **Nick rule.** 1 to `NICK_MAX` = 24 characters, each one of `A-Z a-z 0-9 _ . -`
 (ASCII only, so characters and bytes coincide). A nick is taken when another
-*joined* member has it, comparing ASCII case-insensitively; a member's own nick
+*joined* member has it, comparing case-insensitively (nicks are ASCII, so this
+only equates `A`-`Z` with `a`-`z`); a member's own nick
 never conflicts with itself, and a member that has quit holds no nick. The
 nicks `.` and `..` are valid.
 
@@ -142,20 +162,20 @@ the newest `HISTORY_DEFAULT` = 50 room events, oldest first, each with
 `hist:true`, which includes the member's own `join` and any `nick` event this
 request made, followed by one `ready` line.
 
-**`/who`.** One `who` line listing joined members ordered by nick, comparing
-ASCII case-insensitively. Arguments are ignored.
+**`/who`.** One `who` line listing joined members ordered by nick, compared
+case-insensitively as above. Arguments are ignored.
 
-**`/history [n]`.** Empty argument: `n` = 50. Otherwise the argument must parse as
-a non-negative decimal integer (digits, with an optional leading `+`), else
-`usage: /history [n], n <= 200`. `n` above `HISTORY_MAX` = 200 is reduced to 200
-without an error. Replies with the newest `n` room events, oldest first; `n` = 0
-replies with no lines.
+**`/history [n]`.** Empty argument: `n` = 50. Otherwise the argument must be a
+number, else `usage: /history [n], n <= 200`. `n` above `HISTORY_MAX` = 200 is
+200, without an error, however many digits it has. Replies with the newest `n`
+room events, oldest first; `n` = 0 replies with no lines.
 
-**`/since <seq>`.** The argument must parse as an unsigned 64-bit decimal integer
-(optional leading `+`), else `usage: /since <seq>`. Replies with the room events
-whose `seq` is greater than `seq`, oldest first, at most `SINCE_MAX` = 500. When
-more exist, the reply holds the oldest 500, so a caller pages by repeating the
-request with the last `seq` it received.
+**`/since <seq>`.** The argument must be a number, else `usage: /since <seq>`.
+Replies with the room events whose `seq` is greater than it, oldest first, at
+most `SINCE_MAX` = 500. When more exist, the reply holds the oldest 500, so a
+caller pages by repeating the request with the last `seq` it received. A value at
+or above the newest `seq`, including any value of 2^53 or more, replies with no
+lines.
 
 **`/quit [reason]`.** The member stops being joined and its queued deliveries are
 dropped. A `part` event is stored with the trimmed argument as `reason` (empty
@@ -262,7 +282,7 @@ object opens one unidirectional stream on that connection and writes
 ### Requests
 
 A line that equals one of the commands below, or is the command followed by a
-space and an argument, is that command. Any other line, including `/status x`,
+space and an argument, is that command; the argument is trimmed. Any other line, including `/status x`,
 `/count x` and `/logx`, is logged and echoed.
 
 | Line | Reply (one line) |
@@ -283,10 +303,9 @@ just stored included.
 the retained records of the asking peer, `P` the distinct peers among retained
 records.
 
-**`/log [n]`.** `n` defaults to `ctl_log_default` = 5; the argument must parse as
-a non-negative decimal integer, else `error: usage /log [n], n <= 50`; values
-above 50 are reduced to 50. The reply is the newest `n` retained records of every
-kind (room events included), oldest first, as
+**`/log [n]`.** `n` defaults to `ctl_log_default` = 5; the argument must be a
+number, else `error: usage /log [n], n <= 50`; a value above 50 is 50. The reply
+is the newest `n` retained records of every kind (room events included), oldest first, as
 `{"seq":int,"ts_ms":int,"peer":"<z32>","kind":"…","text":"…"}`. `kind` is `ctl`,
 `echo`, `callback`, `msg`, `act`, `join`, `part` or `nick`. `text` is the line
 for `ctl`, `"<n> bytes"` for `echo`, `delivered` or `failed: <reason>` for
@@ -296,13 +315,12 @@ reason for `part`, and the old nick for `nick`.
 **`/status`.** A JSON object with these keys: `id` (the object's id), `app`
 (`"chat"`), `state` (`"Active"` while answering), `wakes`, `endpoint_builds`,
 `connections` (integers), `bundle` (string, a build identifier), `since_wake_ms`
-(integer), `records` (integer, rows in the log), `members` (joined members) and
+(integer), `records` (integer, the records ever written: `/count`'s `T`), `members` (joined members) and
 `present` (those with an open relay socket). Which host runs the object decides
 the values of `wakes`, `endpoint_builds`, `connections`, `bundle` and
 `since_wake_ms`; the others are defined by the chat app.
 
-**`/callback <secs>`.** `secs` must parse as an unsigned decimal integer of at most
-`MAX_CALLBACK_SECS` = 50 (the peer's relay client closes a relay socket that is not
+**`/callback <secs>`.** `secs` must be a number of at most `MAX_CALLBACK_SECS` = 50 (the peer's relay client closes a relay socket that is not
 its home relay 60 s after its last send), else `error: usage /callback <secs>,
 secs <= 50`. The object schedules one dial-back for that peer after `secs`
 seconds. See `iroh-do/notify/1`.
@@ -326,8 +344,8 @@ with this ALPN, opens one unidirectional stream, writes
 callback from <E z32> wakes=<N> records=<T>\n
 ```
 
-and finishes it (`N`: the object's wake count; `T`: records in the log when the
-line is written). It then waits up to 5 s for the peer to close the connection and
+and finishes it (`N`: the object's wake count; `T`: the records ever written, as
+`/count`'s `T`, when the line is written). It then waits up to 5 s for the peer to close the connection and
 closes it. If the dial or the write fails, nothing is delivered. Either way a
 record of kind `callback` is stored with text `delivered` or `failed: <reason>`.
 The object writes it once the attempt has ended, so it appears in `/log` after
@@ -351,7 +369,7 @@ the dial-back.
 
 ## Differences from design note 008 and between implementations
 
-Where note 008 and the code differ, this document follows the code.
+Where note 008 is silent or says otherwise, this document holds.
 
 1. **`/who` lists joined members only.** Note 008 does not say so. A member that
    quit is not listed.
@@ -378,19 +396,32 @@ Where note 008 and the code differ, this document follows the code.
 10. **Retention alarm.** Note 008 and `docs/design.md` speak of a daily alarm. The
     app schedules one alarm per insert for 14 days plus 60 seconds later under the
     key `prune`, so there is a single pending alarm, not a daily one.
-11. **Integer arguments.** `/history` and `/log` parse a platform `usize`: on the
-    wasm32 build that serves the object, values above 4 294 967 295 get the usage
-    error, where the native build reduces them to the maximum. `/since` and
-    `/callback` parse `u64`. All of them accept a leading `+` (`/history +2`), and leading zeros.
-    The fixtures do not cover these corners.
-12. **Argument trimming** uses Rust's `trim` (Unicode `White_Space`). An
-    implementation in another language must use the same set for arguments that
-    contain such characters (for example U+00A0 or U+2003), or document the
-    difference. JavaScript's `trim` also removes U+FEFF, which Rust does not.
-13. **The chat client** (`examples/chat/client/src/room.rs`) differs from the
+11. **The chat client** (`examples/chat/client/src/room.rs`) differs from the
     object in two ways, both on purpose and both recorded in
     `fixtures_check.rs`: its `Event` has no `hist` field, so it drops it; and its
     `check_nick` also refuses `.` and `..`, which name its state directory, while
     the object accepts them.
-14. **Clock.** Note 008 does not say whose clock `ts` uses: it is the object's,
+12. **Clock.** Note 008 does not say whose clock `ts` uses: it is the object's,
     taken when the event is stored.
+
+## Changes
+
+The first version of this document described the Rust app as built, including
+rules that followed from Rust's standard library rather than from a decision. A
+server in another language would have had to reproduce them. They were replaced by
+the rules below. Both servers and the fixtures follow the new rules: fixture
+`13-arguments.json` covers them, and two steps of `02-history-and-since.json`
+changed. The wire format (ALPNs, framing, JSON shapes, error texts, limits) did not
+change.
+
+| Rule | Before | Now | Why |
+|---|---|---|---|
+| Argument trimming | Unicode `White_Space` (Rust's `str::trim`): removes U+00A0, U+2003 and others, but not U+FEFF | ASCII white space: TAB, LF, FF, CR, SPACE | A set every language has (WHATWG Infra, Rust's `trim_ascii`). JavaScript's `trim` uses a third set |
+| Number arguments | What Rust's integer `parse` accepts: an optional leading `+`, and a range set by the type (`usize` for `/history` and `/log`, which is 2^32 − 1 on wasm32 and 2^64 − 1 natively; `u64` for `/since` and `/callback`) | Digits only, any length; each command states what a value above its bound does | The range differed between the wasm and the native build of the same app, and the `+` was accepted by accident |
+| `/history n`, `/log n` above the bound | Reduced to the bound, unless the value did not fit the integer type, then the usage error | Always reduced to the bound (200, 50) | One rule instead of two |
+| `/since seq` above 2^64 − 1 | Usage error | No lines, as for any value above the newest `seq` | Follows from the definition, with no integer type to fit |
+| Integers on the wire | Unbounded `u64` | At most 2^53 − 1 | Every JSON reader holds them exactly; a JavaScript number cannot hold every `u64` |
+| JSON string escapes | Exactly `"`, `\`, and characters below U+0020 as `\u00XX` | Any escape JSON allows; nothing above U+007F escaped | Lets a server use its language's JSON encoder; readers already had to accept any encoding |
+| Byte order mark | Unspecified: Rust keeps a leading U+FEFF, a default JavaScript `TextDecoder` drops it | A leading U+FEFF is part of the line | So that implementations agree; keeping it is what a strict decoder does |
+| `records` in `/status`, `T` of the notify line | "rows in the log", "records in the log" | The records ever written, `/count`'s `T` | A correction: both servers have always reported this number, which differs from the row count once the log is pruned |
+| Nick comparison | "ASCII case-insensitively" | Case-insensitively; nicks are ASCII, so this equates `A`-`Z` with `a`-`z` only | Same behavior, stated as the rule rather than as an implementation |

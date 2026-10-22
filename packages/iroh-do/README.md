@@ -280,7 +280,7 @@ cd examples/echo/server && npm run check && npm run build && npm test   # admin 
   `evicted_active`.
 - `examples/ts-deployment/test/router-test.mjs`: mint by app, the endpoint list, class
   resolution through the registry and its cache, destroy.
-- `examples/ts-deployment/test/room-test.mjs`: the chat room with two present stock
+- `examples/ts-deployment/test/room.test.mjs` (Vitest): the chat room with two present stock
   `iroh-do-chat` members across a forced hibernation, dial-back delivery and connection
   reuse.
 

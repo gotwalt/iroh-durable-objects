@@ -118,8 +118,10 @@ resource "cloudflare_workers_script" "iroh_do" {
     # migration, or none, fails that check after the API call has succeeded.
     # The cost: after an apply that sent a migration, the next plan shows
     # `migrations` going to null, and one more apply (an upload with no
-    # migration) clears it. A script whose state already holds null, such as
-    # module.iroh_do's, plans with no change.
+    # migration) clears it; `just up` makes that apply. It is a full script upload,
+    # so the script's live Durable Objects restart (Cloudflare's documented
+    # behaviour for a new deployment; not tested here). A script whose state
+    # already holds null, such as module.iroh_do's, plans with no change.
 
     precondition {
       condition     = local.applied_index != null

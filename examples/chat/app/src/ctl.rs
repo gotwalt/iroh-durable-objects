@@ -18,7 +18,9 @@ use iroh_do_core::{Activity, CLOSE_OK};
 use n0_future::time::Instant;
 use tracing::{debug, info, warn};
 
-use crate::{CALLBACK_KEY, Chat, LogKind, LogRow, MAX_CALLBACK_SECS, NOTIFY_ALPN, store};
+use crate::{
+    CALLBACK_KEY, Chat, LogKind, LogRow, MAX_CALLBACK_SECS, NOTIFY_ALPN, parse_number, store,
+};
 
 /// Default `n` of `/log [n]`.
 const LOG_DEFAULT: usize = 5;
@@ -186,9 +188,9 @@ fn respond(chat: &Arc<Chat>, conn: &Connection, line: &str) -> String {
         let n = if arg.is_empty() {
             LOG_DEFAULT
         } else {
-            match arg.parse::<usize>() {
-                Ok(n) => n.min(LOG_MAX),
-                Err(_) => return format!("error: usage /log [n], n <= {LOG_MAX}"),
+            match parse_number(arg) {
+                Some(n) => usize::try_from(n).map_or(LOG_MAX, |n| n.min(LOG_MAX)),
+                None => return format!("error: usage /log [n], n <= {LOG_MAX}"),
             }
         };
         let rows = chat
@@ -197,8 +199,8 @@ fn respond(chat: &Arc<Chat>, conn: &Connection, line: &str) -> String {
         return log_json(&rows);
     }
     if let Some(arg) = command_arg(line, "/callback") {
-        let secs = match arg.parse::<u64>() {
-            Ok(s) if s <= MAX_CALLBACK_SECS => s,
+        let secs = match parse_number(arg) {
+            Some(s) if s <= MAX_CALLBACK_SECS => s,
             _ => return format!("error: usage /callback <secs>, secs <= {MAX_CALLBACK_SECS}"),
         };
         chat.ctx
@@ -221,7 +223,7 @@ pub(crate) fn command_arg<'a>(line: &'a str, cmd: &str) -> Option<&'a str> {
     if rest.is_empty() {
         Some("")
     } else if rest.starts_with(' ') {
-        Some(rest.trim())
+        Some(rest.trim_ascii())
     } else {
         None
     }
@@ -381,6 +383,9 @@ mod tests {
         assert_eq!(command_arg("/log 7", "/log"), Some("7"));
         assert_eq!(command_arg("/logx", "/log"), None);
         assert_eq!(command_arg("hello", "/log"), None);
+        // Only ASCII white space is trimmed.
+        assert_eq!(command_arg("/log \t7 ", "/log"), Some("7"));
+        assert_eq!(command_arg("/log \u{a0}7", "/log"), Some("\u{a0}7"));
     }
 
     /// [`MAX_LINE`] holds however the line and its terminator are split across reads.
