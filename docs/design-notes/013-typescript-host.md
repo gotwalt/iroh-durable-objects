@@ -2,7 +2,7 @@
 
 **Status:** proposed (2026-10-22). Replaces the app API of 011 and the glue
 layout of 011 and 012. Rewords P5 in `spec.md` §1, which needs review.
-Evidence: `spikes/ts-host/FINDINGS.md`.
+Evidence: `docs/verification/ts-host.md`.
 
 iroh-do is a feasibility study. This change keeps no compatibility with the
 current deployment.
@@ -92,8 +92,12 @@ when its handler's promise settles, unless another handler or a dial still
 holds it. An app that keeps a connection, for example the chat room reusing it
 for deliveries, keeps its `accept` pending until `conn.closed()`. Stream halves
 abandoned without being finished are released when their connection closes,
-not when they are collected. *To be implemented: the spike relies on the
-idle/silent limits instead.*
+not when they are collected. *Implemented in step 1* (`crates/iroh-do-wasm/src/app.rs`,
+`iroh_do_core::Activity`): the close uses code 0 and reason `done`. An accepted connection
+has exactly one handler and a dial creates a different connection, so nothing else can hold
+it: the close happens whenever the handler's promise settles. A connection the app
+dials with `endpoint.connect` has no handler scope; it stays open until the app or the peer
+closes it, or the idle close does. Tested by `packages/iroh-do/test/lifetime-test.mjs`.
 
 ### Panics
 
@@ -101,7 +105,14 @@ With `panic = "abort"`, a panic traps the isolate's one wasm instance, which
 every object in the isolate shares. The base class catches the
 `WebAssembly.RuntimeError` and reinstantiates the module. It then marks every
 object's node lost, and each object rebuilds its node on its next event from
-storage and socket attachments, the same path as a wake. *Not yet tested.*
+storage and socket attachments, the same path as a wake. *Implemented and tested in
+step 1* (`packages/iroh-do/test/panic-test.mjs`). The glue is generated with
+`wasm-bindgen --experimental-reset-state-function`, whose `__wbg_reset_state`
+re-instantiates the module and makes objects and closures of the old instance throw
+instead of reaching the new one. A Rust panic hook tells the host before the trap, which
+covers panics in node tasks, where no object catches the `RuntimeError`. Relay sockets
+survive; open QUIC connections are lost, and their peers redial after their idle
+timeout.
 
 ## P5
 
@@ -173,7 +184,7 @@ connection is dropped rather than left stalled.
   - `iroh-relay-ingress` and `iroh-do-harness` keep the native tests.
   - The harness tests the node with a Rust handler, as `library.rs` does.
   - TypeScript apps are tested in Miniflare against stock peers, as
-    `spikes/ts-host/test/evict-test.mjs` does.
+    `examples/echo/server/test/evict-test.mjs` does.
   - `tests/workerd/` is rewritten for the new bundle.
 - **Examples:**
   - `examples/echo` becomes a TypeScript class.
@@ -182,9 +193,11 @@ connection is dropped rather than left stalled.
     request and reply fixtures. The TypeScript server's tests and the Rust
     client's tests both check the fixtures.
   - The clients do not change (P3).
-- **Not yet ported:** pkarr publishing, the registry and endpoint list, and
-  destroy. pkarr splits the same way as the rest: Rust builds and signs the
-  packet, and TypeScript does the `fetch` and the retries.
-- **`unsafe`:** `iroh-do-wasm` asserts `Send` on handler futures, because
-  iroh's `ProtocolHandler::accept` requires it and a JS promise is not `Send`.
-  This is sound only on wasm32 without threads.
+- **Ported in step 1:** pkarr publishing at mint (Rust builds, signs and checks the
+  record in `iroh_do_core::pkarr`; TypeScript does the `fetch`, the retries and the
+  republish alarm) and destroy, as the RPC `destroy()`. **Not yet ported:** the registry
+  and the endpoint list.
+- **`unsafe`:** removed in step 1. `iroh-do-core` has `LocalProtocolHandler`, whose
+  `accept` future must be `Send` only natively; on wasm32 the node spawns handler futures
+  with `spawn_local` and needs no bound. `iroh-do-wasm` registers its handlers with
+  `Protocols::accept_local`.
