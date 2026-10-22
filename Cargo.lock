@@ -1761,6 +1761,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "iroh-do-ts-spike-peer"
+version = "0.1.0"
+dependencies = [
+ "iroh",
+ "n0-error",
+ "tokio",
+]
+
+[[package]]
 name = "iroh-do-wasm"
 version = "0.1.0"
 dependencies = [

@@ -340,7 +340,11 @@ export abstract class IrohDurableObject<Env = unknown> extends DurableObject<Env
   async status(): Promise<Status | null> {
     this.#load();
     if (!this.#node) return null;
-    return { ...JSON.parse(this.#node.status()), tasks: this.#node.tasks(), sockets: this.#sockets.size };
+    return {
+      ...JSON.parse(this.#node.status()),
+      tasks: this.#node.tasks(),
+      sockets: [...this.#sockets.keys()],
+    };
   }
 }
 
