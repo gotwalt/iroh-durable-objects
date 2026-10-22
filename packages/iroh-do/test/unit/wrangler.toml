@@ -1,0 +1,26 @@
+# The Worker of the unit tests (test/unit/worker.ts, vitest.unit.config.ts). Never deployed.
+name = "iroh-do-unit"
+main = "worker.ts"
+compatibility_date = "2026-09-15"
+
+[vars]
+ZONE_SUFFIX = "localhost"
+ADMIN_TOKEN = "test-token"
+PKARR_RELAY = ""
+LOG_LEVEL = "warn"
+
+[[durable_objects.bindings]]
+name = "ENDPOINTS"
+class_name = "TestEndpoint"
+
+[[durable_objects.bindings]]
+name = "BROKEN"
+class_name = "BrokenEndpoint"
+
+[[durable_objects.bindings]]
+name = "REGISTRY"
+class_name = "Registry"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["TestEndpoint", "BrokenEndpoint", "Registry"]

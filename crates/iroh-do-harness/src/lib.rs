@@ -151,6 +151,7 @@ impl Harness {
             sockets: Mutex::new(HashMap::new()),
             next_sid: AtomicU64::new(0),
             live: Mutex::new(None),
+            bind_callbacks: Mutex::new(Vec::new()),
         });
         lock(&self.objects).insert(id, obj.clone());
         obj
@@ -207,6 +208,8 @@ pub struct DoObject {
     sockets: Mutex<HashMap<u64, Socket>>,
     next_sid: AtomicU64,
     live: Mutex<Option<Live>>,
+    /// `endpoint_built` and `endpoint_closed` calls, with the node state each read back.
+    bind_callbacks: Mutex<Vec<(&'static str, State)>>,
 }
 
 impl std::fmt::Debug for DoObject {
@@ -240,6 +243,12 @@ impl DoObject {
             None if lock(&self.sockets).is_empty() => State::Cold,
             None => State::Warm,
         }
+    }
+
+    /// Returns the host's `endpoint_built` and `endpoint_closed` calls in order, each with the
+    /// node state the host read back from inside the call.
+    pub fn bind_callbacks(&self) -> Vec<(&'static str, State)> {
+        lock(&self.bind_callbacks).clone()
     }
 
     /// Returns the number of sockets the runtime holds.
@@ -595,6 +604,18 @@ impl Host for HostImpl {
     fn endpoint_built(&self) {
         if let Some(obj) = self.object.upgrade() {
             obj.endpoint_builds.fetch_add(1, Ordering::SeqCst);
+            // Calls back into the node, as a host is allowed to here (`Host` docs).
+            if let Some(n) = obj.node() {
+                lock(&obj.bind_callbacks).push(("built", n.state()));
+            }
+        }
+    }
+
+    fn endpoint_closed(&self) {
+        if let Some(obj) = self.object.upgrade()
+            && let Some(n) = obj.node()
+        {
+            lock(&obj.bind_callbacks).push(("closed", n.state()));
         }
     }
 

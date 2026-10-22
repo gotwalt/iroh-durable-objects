@@ -161,7 +161,8 @@ type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 /// into JavaScript registers them with [`Protocols::accept_local`] instead.
 pub trait LocalProtocolHandler: Send + Sync + std::fmt::Debug + 'static {
     /// Handles one accepted connection, as [`ProtocolHandler::accept`] does.
-    fn accept(&self, conn: Connection) -> impl Future<Output = Result<(), AcceptError>> + MaybeSend;
+    fn accept(&self, conn: Connection)
+    -> impl Future<Output = Result<(), AcceptError>> + MaybeSend;
 }
 
 /// Adapts a [`LocalProtocolHandler`] to [`DynHandler`]. A wrapper rather than a second blanket

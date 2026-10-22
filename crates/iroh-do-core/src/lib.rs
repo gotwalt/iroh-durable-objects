@@ -176,6 +176,11 @@ impl fmt::Debug for Config {
 }
 
 /// Services the node needs from its host: frame output, scheduling and SQL.
+///
+/// Re-entry: the node calls [`Host::endpoint_built`] and [`Host::endpoint_closed`] with no
+/// lock held, so they may call back into the node. The other methods may be called with the
+/// node's state locked, and must not call back into the node: on wasm32 that traps, natively
+/// it deadlocks.
 pub trait Host: FrameSink {
     /// Persists work under `key`, due after `delay`, replacing any pending work with the same
     /// key, and arms an alarm. When it is due the host calls [`Node::alarm`] with `key` and
@@ -189,12 +194,14 @@ pub trait Host: FrameSink {
     /// any more.
     fn with_sql(&self, f: &mut dyn FnMut(&dyn Sql));
 
-    /// Called each time the node binds an endpoint.
+    /// Called each time the node has bound an endpoint, after the state is Active.
     ///
     /// A host that persists the count passes it back as [`Config::endpoint_builds`].
     fn endpoint_built(&self) {}
 
-    /// Called each time the node has closed its endpoint after [`Config::t_linger`].
+    /// Called each time the node has closed its endpoint after [`Config::t_linger`], once the
+    /// node no longer counts as bound. On wasm32, where the node runs on one thread, it comes
+    /// before the [`Host::endpoint_built`] of any later bind.
     ///
     /// Between [`Host::endpoint_built`] and this call the node has QUIC state that no storage
     /// can restore. A host that records the interval can tell, after an eviction, whether
@@ -671,7 +678,6 @@ impl Shared {
         inner.stats.endpoint_builds += 1;
         inner.active_since = Some(Instant::now());
         inner.idle_limits = idle_limits;
-        self.host.endpoint_built();
         info!(
             event = "endpoint_bind",
             ok = true,
@@ -697,6 +703,9 @@ impl Shared {
         if inner.busy == 0 {
             self.start_linger_locked(&mut inner);
         }
+        // Outside the lock: the host may call back into the node (`Host` docs).
+        drop(inner);
+        self.host.endpoint_built();
     }
 
     async fn accept_loop(self: Arc<Self>, endpoint: Endpoint, handlers: Handlers) {
@@ -764,13 +773,20 @@ impl Shared {
         );
         inner.stats.endpoint_closes += 1;
         inner.stats.teardown_leftover_tasks = Some(leftover);
-        self.host.endpoint_closed();
         inner.phase = Phase::Idle;
-        if !inner.queue.is_empty() || !inner.waiters.is_empty() {
-            debug!("work arrived while closing: re-activating");
-            self.activate_locked(&mut inner);
-        } else {
+        let reactivate = !inner.queue.is_empty() || !inner.waiters.is_empty();
+        if !reactivate {
             self.note_state_locked(&mut inner);
+        }
+        // Outside the lock, with the phase Idle: the host may call back into the node. The
+        // re-activation below comes after it, so that on one thread a host that records the
+        // bound interval sees this close before the next bind.
+        drop(inner);
+        self.host.endpoint_closed();
+        if reactivate {
+            debug!("work arrived while closing: re-activating");
+            let mut inner = self.lock();
+            self.activate_locked(&mut inner);
         }
     }
 

@@ -6,12 +6,14 @@
 //!
 //! Each fixture starts a new object and one stock iroh endpoint per named member, with the
 //! object's relay as its home relay as the chat client configures it. Steps run in order. After
-//! each step the runner collects what the object delivered unprompted, so every delivery is
-//! attributed to the step that caused it.
+//! each step the runner waits for the step's listed deliveries, matched per member in any order
+//! (lines from different connections have none), then for 250 ms more; a delivery that arrives
+//! later fails the next step as late instead of being attributed to it.
 //!
 //! `RECORD_FIXTURES=1 cargo test -p iroh-do-chat-app --test fixtures` fills in the `expect`,
 //! `expect_raw` and `deliveries` of steps that have none, from what this server does, and
-//! writes the files back. Steps that already have an expectation are verified, never rewritten.
+//! writes the files back with keys in sorted order. Steps that already have an expectation,
+//! deliveries included, are verified as without `RECORD_FIXTURES`, never rewritten.
 //!
 //! `FIXTURE_TARGET=<port> FIXTURE_ADMIN_TOKEN=<token> cargo test -p iroh-do-chat-app --test
 //! fixtures` runs the same fixtures against another chat server: a `wrangler dev` of a
@@ -562,8 +564,8 @@ impl Target {
 
 /// `POST /mint` on the admin host of a local `wrangler dev`; returns the JSON body.
 ///
-/// Plain HTTP/1.1 over a socket keeps the test free of an HTTP client dependency. The body is a
-/// single JSON object, so a chunked response is reduced to the text between its outer braces.
+/// Plain HTTP/1.1 over a socket keeps the test free of an HTTP client dependency; the body may
+/// come with a `Content-Length`, chunked, or delimited by the close.
 fn mint_remote(port: u16, token: &str) -> Result<String, String> {
     let body = r#"{"app":"chat"}"#;
     let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).map_err(|e| e.to_string())?;
@@ -574,15 +576,50 @@ fn mint_remote(port: u16, token: &str) -> Result<String, String> {
         body.len()
     )
     .map_err(|e| e.to_string())?;
-    let mut out = String::new();
-    s.read_to_string(&mut out).map_err(|e| e.to_string())?;
-    let (head, rest) = out.split_once("\r\n\r\n").ok_or("mint: no response")?;
+    let mut out = Vec::new();
+    s.read_to_end(&mut out).map_err(|e| e.to_string())?;
+    let split = out
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or("mint: no response")?;
+    let head = String::from_utf8_lossy(&out[..split]).into_owned();
+    let rest = &out[split + 4..];
     if !head.starts_with("HTTP/1.1 200") {
         return Err(format!("mint: {}", head.lines().next().unwrap_or("")));
     }
-    match (rest.find('{'), rest.rfind('}')) {
-        (Some(a), Some(b)) => Ok(rest[a..=b].to_string()),
-        _ => Err(format!("mint: body {rest}")),
+    let chunked = head.lines().any(|l| {
+        let l = l.to_ascii_lowercase();
+        l.starts_with("transfer-encoding:") && l.contains("chunked")
+    });
+    let body = if chunked {
+        dechunk(rest)?
+    } else {
+        rest.to_vec()
+    };
+    String::from_utf8(body).map_err(|e| format!("mint: body: {e}"))
+}
+
+/// Decodes a chunked HTTP/1.1 body (RFC 9112 §7.1); trailers are ignored.
+fn dechunk(mut rest: &[u8]) -> Result<Vec<u8>, String> {
+    let mut body = Vec::new();
+    loop {
+        let eol = rest
+            .windows(2)
+            .position(|w| w == b"\r\n")
+            .ok_or("mint: truncated chunk size")?;
+        let line = std::str::from_utf8(&rest[..eol]).map_err(|e| e.to_string())?;
+        let size = line.split(';').next().unwrap_or("").trim();
+        let size = usize::from_str_radix(size, 16)
+            .map_err(|e| format!("mint: chunk size {line:?}: {e}"))?;
+        rest = &rest[eol + 2..];
+        if size == 0 {
+            return Ok(body);
+        }
+        if rest.len() < size + 2 {
+            return Err("mint: truncated chunk".into());
+        }
+        body.extend_from_slice(&rest[..size]);
+        rest = &rest[size + 2..];
     }
 }
 
@@ -645,6 +682,14 @@ async fn run_step(
         sleep(Duration::from_millis(ms)).await;
         return Ok(());
     }
+    // Anything already queued arrived after the previous step had settled: report it as late
+    // rather than attribute it to this step.
+    let late = drain(run).await;
+    if !late.is_empty() {
+        return Err(format!(
+            "deliveries arrived after the previous step settled ({SETTLE:?}): {late:?}"
+        ));
+    }
     let member = step["member"].as_str().ok_or("member")?.to_string();
     let proto = step
         .get("proto")
@@ -694,37 +739,35 @@ async fn run_step(
         }
     }
 
-    // Unprompted lines.
-    if record {
+    // Unprompted lines. A step that has an expectation is verified, also when recording.
+    if record && unrecorded {
         sleep(SETTLE_RECORD).await;
     } else {
         if let Some(d) = step.get("deliveries").and_then(Value::as_object) {
             for (who, entries) in d {
+                let want = entries.as_array().ok_or("deliveries")?;
                 let ma = run.actor(who);
                 let mut rx = ma.lines.lock().await;
-                for (j, p) in entries.as_array().ok_or("deliveries")?.iter().enumerate() {
+                let mut lines = Vec::with_capacity(want.len());
+                while lines.len() < want.len() {
                     let line = timeout(DELIVERY_WAIT, rx.recv())
                         .await
-                        .map_err(|_| format!("{who}: delivery {j} did not arrive"))?
+                        .map_err(|_| {
+                            format!(
+                                "{who}: {} of {} deliveries arrived: {lines:?}",
+                                lines.len(),
+                                want.len()
+                            )
+                        })?
                         .ok_or("channel closed")?;
-                    match_line(p, &line, &mut run.binds)
-                        .map_err(|e| format!("{who}: delivery {j}: {e}"))?;
+                    lines.push(line);
                 }
+                match_unordered(want, &lines, &mut run.binds).map_err(|e| format!("{who}: {e}"))?;
             }
         }
         sleep(SETTLE).await;
     }
-    let mut got: Vec<(String, Vec<String>)> = Vec::new();
-    for (n, ma) in &run.actors {
-        let mut rx = ma.lines.lock().await;
-        let mut lines = Vec::new();
-        while let Ok(l) = rx.try_recv() {
-            lines.push(l);
-        }
-        if !lines.is_empty() {
-            got.push((n.clone(), lines));
-        }
-    }
+    let got = drain(run).await;
     if record && unrecorded {
         let ids = &run.ids;
         let obj = step.as_object_mut().unwrap();
@@ -750,8 +793,60 @@ async fn run_step(
             obj.insert("deliveries".into(), Value::Object(d));
         }
         *changed = true;
-    } else if !got.is_empty() && !record {
+    } else if !got.is_empty() {
         return Err(format!("unexpected deliveries: {got:?}"));
+    }
+    Ok(())
+}
+
+/// Takes every line queued for every member, by member.
+async fn drain(run: &Run) -> Vec<(String, Vec<String>)> {
+    let mut got = Vec::new();
+    for (n, ma) in &run.actors {
+        let mut rx = ma.lines.lock().await;
+        let mut lines = Vec::new();
+        while let Ok(l) = rx.try_recv() {
+            lines.push(l);
+        }
+        if !lines.is_empty() {
+            got.push((n.clone(), lines));
+        }
+    }
+    got
+}
+
+/// Matches one member's deliveries against the patterns in any order.
+///
+/// Deliveries can reach a member over several connections (a dialed one and its own), and
+/// lines of different connections arrive in no defined order; lines of one stream keep theirs.
+/// Each pattern, in order, takes the first unused line it matches; bindings are kept only from
+/// the match that is taken.
+fn match_unordered(want: &[Value], lines: &[String], b: &mut Binds) -> Result<(), String> {
+    let mut used = vec![false; lines.len()];
+    for (j, p) in want.iter().enumerate() {
+        let mut errors = Vec::new();
+        let mut found = false;
+        for (k, line) in lines.iter().enumerate() {
+            if used[k] {
+                continue;
+            }
+            let mut trial = b.clone();
+            match match_line(p, line, &mut trial) {
+                Ok(()) => {
+                    *b = trial;
+                    used[k] = true;
+                    found = true;
+                    break;
+                }
+                Err(e) => errors.push(format!("line {k}: {e}")),
+            }
+        }
+        if !found {
+            return Err(format!(
+                "delivery {j} matches no line: {}",
+                errors.join("; ")
+            ));
+        }
     }
     Ok(())
 }

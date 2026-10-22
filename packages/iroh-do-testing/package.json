@@ -1,0 +1,34 @@
+{
+  "name": "iroh-do-testing",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Test helpers for apps on iroh-do: a bundle in Miniflare, and stock iroh peers as child processes, with deadlines",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./repo": {
+      "types": "./dist/repo.d.ts",
+      "default": "./dist/repo.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.19"
+  },
+  "dependencies": {
+    "miniflare": "5.20260908.0-alpha"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit"
+  }
+}

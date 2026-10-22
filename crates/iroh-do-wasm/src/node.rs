@@ -6,7 +6,7 @@
 //! the peer → socket map that the transport writes through, and the [`Node`]. Every outbound
 //! frame, including handshake replies and pongs, goes out through `NodeHost.sendFrame`.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use iroh::{EndpointId as Id, SecretKey};
 use iroh_do_core::{AppEntry, Config, Ctx, Node};
@@ -21,9 +21,9 @@ use wasm_bindgen_futures::future_to_promise;
 
 use crate::{
     app::JsApp,
-    host::{self, Entry, JsHost, NodeHost},
+    host::{self, Entry, JsHost, NodeHost, Token},
     ids::{EndpointAddr, EndpointId, peer_from_js},
-    js_err,
+    js_err, named_err,
     streams::Connection,
 };
 
@@ -106,9 +106,20 @@ struct Effects {
 #[wasm_bindgen]
 pub struct WasmNode {
     id: Id,
+    /// This node's entry in [`host`].
+    token: Token,
     node: Node,
     cfg: IngressConfig,
     relay_url: String,
+}
+
+/// Freed by the object (`free()`), or by wasm-bindgen's `FinalizationRegistry` once the
+/// object that held it is collected: the entry goes with it, so that the node's tasks still
+/// winding down reach no socket.
+impl Drop for WasmNode {
+    fn drop(&mut self) {
+        host::remove(self.token);
+    }
 }
 
 #[wasm_bindgen]
@@ -133,15 +144,6 @@ impl WasmNode {
                 .ok_or_else(|| JsError::new("protocols[].alpn must be a string"))?;
             alpns.push((alpn.into_bytes(), ms(get(&p, "idleMs"))));
         }
-        host::install(
-            id,
-            Entry {
-                host,
-                sessions: HashMap::new(),
-                peers: HashMap::new(),
-                alpns,
-            },
-        );
         let wakes = get(&opts, "wakes").as_f64().unwrap_or(0.0) as u64;
         let bundle = get(&opts, "bundle").as_string().unwrap_or_default();
         let mut config = Config::new(secret, wakes, bundle);
@@ -155,9 +157,13 @@ impl WasmNode {
         if let Some(d) = ms(get(&opts, "tLingerMs")) {
             config.t_linger = d;
         }
-        let node = Node::new(config, Arc::new(JsHost { local: id }), &APP);
+        let token = host::install(Entry::new(&host, alpns));
+        let node = host::building(token, || {
+            Node::new(config, Arc::new(JsHost { local: id, token }), &APP)
+        });
         Ok(WasmNode {
             id,
+            token,
             node,
             cfg: IngressConfig::new(id),
             relay_url: get(&opts, "relayUrl").as_string().unwrap_or_default(),
@@ -200,8 +206,9 @@ impl WasmNode {
 
     /// Disconnects the node from its object: later frames and callbacks go nowhere. For
     /// destroy, where node tasks may still be winding down after the object has dropped it.
+    /// Freeing the node does the same.
     pub fn detach(&self) {
-        host::remove(&self.id);
+        host::remove(self.token);
     }
 
     /// Runs work scheduled through `NodeHost.schedule`. Only Rust apps schedule.
@@ -228,16 +235,16 @@ impl WasmNode {
         };
         let out = Object::new();
         let mut rng = rand_core::UnwrapErr(getrandom::SysRng);
-        let (resp, session) = match IngressSession::on_upgrade(&req, &self.cfg, &mut rng, now(now_ms))
-        {
-            Ok(x) => x,
-            Err(rej) => {
-                set(&out, "ok", false);
-                set(&out, "status", rej.http_status());
-                set(&out, "message", rej.to_string());
-                return Ok(out.into());
-            }
-        };
+        let (resp, session) =
+            match IngressSession::on_upgrade(&req, &self.cfg, &mut rng, now(now_ms)) {
+                Ok(x) => x,
+                Err(rej) => {
+                    set(&out, "ok", false);
+                    set(&out, "status", rej.http_status());
+                    set(&out, "message", rej.to_string());
+                    return Ok(out.into());
+                }
+            };
         let sid = random_sid()?;
         set(&out, "ok", true);
         set(&out, "sid", sid.as_str());
@@ -245,7 +252,10 @@ impl WasmNode {
         set(
             &out,
             "snapshot",
-            session.snapshot().map(|s| snapshot_json(&s)).unwrap_or_default(),
+            session
+                .snapshot()
+                .map(|s| snapshot_json(&s))
+                .unwrap_or_default(),
         );
         set(
             &out,
@@ -255,16 +265,19 @@ impl WasmNode {
                 .map_or(0.0, |d| d.as_millis() as f64),
         );
         let challenge = resp.challenge.into_vec();
-        host::with(&self.id, |e| e.sessions.insert(sid.clone(), session));
-        PENDING_CHALLENGES.with(|p| p.borrow_mut().insert(sid, challenge));
+        host::with(self.token, |e| {
+            e.challenges.insert(sid.clone(), challenge);
+            e.sessions.insert(sid, session);
+        })
+        .ok_or_else(|| js_err("node detached"))?;
         Ok(out.into())
     }
 
     /// Writes the challenge of a socket accepted after `upgrade`.
     pub fn opened(&self, sid: &str) -> Result<(), JsValue> {
-        let challenge = PENDING_CHALLENGES.with(|p| p.borrow_mut().remove(sid));
+        let challenge = host::with(self.token, |e| e.challenges.remove(sid)).flatten();
         match challenge {
-            Some(c) => host::send(&self.id, sid, &c),
+            Some(c) => host::send(self.token, sid, &c),
             None => Err(js_err("no pending challenge")),
         }
     }
@@ -280,7 +293,10 @@ impl WasmNode {
             return self.apply(fx);
         };
         let session = IngressSession::restore(snap, &self.cfg);
-        if session.handshake_deadline().is_some_and(|d| d <= now(now_ms)) {
+        if session
+            .handshake_deadline()
+            .is_some_and(|d| d <= now(now_ms))
+        {
             warn!(event = "ingress_auth", endpoint = %self.id.to_z32(), ok = false, reason = "handshake timeout");
             fx.close
                 .push((sid, close_code::POLICY_VIOLATION, "handshake timeout"));
@@ -288,7 +304,7 @@ impl WasmNode {
         }
         let peer = session.peer();
         fx.deadline_ms = session.handshake_deadline().map(|d| d.as_millis() as f64);
-        host::with(&self.id, |e| {
+        host::with(self.token, |e| {
             if let Some(peer) = peer
                 && let Some(old) = e.peers.insert(peer, sid.clone())
             {
@@ -311,7 +327,7 @@ impl WasmNode {
         let mut authed = None;
         let mut datagrams = Vec::new();
         let local = self.id;
-        let handled = host::with(&self.id, |e| {
+        let handled = host::with(self.token, |e| {
             let Some(session) = e.sessions.get_mut(&sid) else {
                 fx.close
                     .push((sid.clone(), close_code::PROTOCOL_ERROR, "lost session"));
@@ -383,7 +399,7 @@ impl WasmNode {
     pub fn text_message(&self, sid: String) -> JsValue {
         let mut fx = Effects::default();
         let local = self.id;
-        host::with(&self.id, |e| {
+        host::with(self.token, |e| {
             if let Some(s) = e.sessions.get_mut(&sid) {
                 let close = s.on_text_message();
                 close_session(e, &sid, close, &mut fx, &local);
@@ -395,7 +411,7 @@ impl WasmNode {
     /// Forgets socket `sid`, which the peer or the runtime closed.
     #[wasm_bindgen(js_name = socketClosed)]
     pub fn socket_closed(&self, sid: &str) {
-        let gone = host::with(&self.id, |e| drop_session(e, sid)).flatten();
+        let gone = host::with(self.token, |e| drop_session(e, sid)).flatten();
         if let Some(peer) = gone {
             self.node.socket_closed(peer);
         }
@@ -407,7 +423,7 @@ impl WasmNode {
     pub fn sweep(&self, now_ms: f64) -> JsValue {
         let mut fx = Effects::default();
         let t = now(now_ms);
-        host::with(&self.id, |e| {
+        host::with(self.token, |e| {
             let expired: Vec<String> = e
                 .sessions
                 .iter()
@@ -432,7 +448,7 @@ impl WasmNode {
     /// Writes collected frames, then returns the `IngressResult`.
     fn apply(&self, fx: Effects) -> JsValue {
         for (sid, f) in &fx.frames {
-            let _ = host::send(&self.id, sid, f);
+            let _ = host::send(self.token, sid, f);
         }
         let out = Object::new();
         let close = js_sys::Array::new();
@@ -454,14 +470,9 @@ impl WasmNode {
     }
 }
 
-thread_local! {
-    /// Challenges of accepted upgrades, until the socket is open for writing.
-    static PENDING_CHALLENGES: std::cell::RefCell<HashMap<String, Vec<u8>>> =
-        std::cell::RefCell::new(HashMap::new());
-}
-
 /// Removes `sid`; returns its peer if no other socket of that peer remains.
 fn drop_session(e: &mut Entry, sid: &str) -> Option<Id> {
+    e.challenges.remove(sid);
     let peer = e.sessions.remove(sid)?.peer()?;
     if e.peers.get(&peer).map(String::as_str) == Some(sid) {
         e.peers.remove(&peer);
@@ -472,10 +483,15 @@ fn drop_session(e: &mut Entry, sid: &str) -> Option<Id> {
 
 fn close_session(e: &mut Entry, sid: &str, close: Close, fx: &mut Effects, local: &Id) {
     match e.sessions.get(sid).and_then(|s| s.peer()) {
-        None => warn!(event = "ingress_auth", endpoint = %local.to_z32(), ok = false, code = close.code, reason = close.reason_text()),
-        Some(p) => info!(event = "socket_close", endpoint = %local.to_z32(), peer = %p.to_z32(), by = "object", code = close.code, reason = close.reason_text()),
+        None => {
+            warn!(event = "ingress_auth", endpoint = %local.to_z32(), ok = false, code = close.code, reason = close.reason_text())
+        }
+        Some(p) => {
+            info!(event = "socket_close", endpoint = %local.to_z32(), peer = %p.to_z32(), by = "object", code = close.code, reason = close.reason_text())
+        }
     }
-    fx.close.push((sid.to_owned(), close.code, close.reason_text()));
+    fx.close
+        .push((sid.to_owned(), close.code, close.reason_text()));
     if let Some(f) = close.frame {
         fx.frames.push((sid.to_owned(), f.into_vec()));
     }
@@ -519,13 +535,26 @@ impl Endpoint {
     ) -> Promise {
         let ctx = self.ctx.clone();
         let parsed = peer_from_js(&peer);
-        let alpn = match alpn.as_string() {
-            Some(s) => s.into_bytes(),
-            None => js_sys::Uint8Array::new(&alpn).to_vec(),
+        let alpn = if let Some(s) = alpn.as_string() {
+            Ok(s.into_bytes())
+        } else if let Some(b) = alpn.dyn_ref::<js_sys::Uint8Array>() {
+            Ok(b.to_vec())
+        } else {
+            Err(named_err(
+                "TypeError",
+                "alpn must be a string or a Uint8Array",
+            ))
         };
         future_to_promise(async move {
             let peer = parsed?;
-            let conn = ctx.connect(peer, &alpn).await.map_err(js_err)?;
+            let alpn = alpn?;
+            if alpn.is_empty() {
+                return Err(named_err("TypeError", "alpn must not be empty"));
+            }
+            let conn = ctx
+                .connect(peer, &alpn)
+                .await
+                .map_err(|e| named_err("ConnectError", e))?;
             let activity = ctx.activity(&conn);
             Ok(Connection::new(conn, activity).into())
         })

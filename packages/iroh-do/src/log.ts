@@ -3,7 +3,7 @@
 // the fields of a logged object. The wasm side writes iroh's and the node's events in the
 // same format; `LOG_LEVEL` filters only those.
 
-type Level = "error" | "warn" | "info";
+export type Level = "error" | "warn" | "info";
 
 const TARGET = "iroh_do::host";
 

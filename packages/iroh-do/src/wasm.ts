@@ -1,4 +1,3 @@
-/// <reference path="./wasm-module.d.ts" />
 // The wasm library (crates/iroh-do-wasm), loaded once per isolate, and its recovery after a
 // panic.
 //
@@ -11,10 +10,13 @@
 // and marks every object and closure of the old instance stale, so that a stale call throws
 // instead of reaching the new instance. `generation` counts instances; an object whose node
 // was built for an older generation rebuilds it (object.ts).
-import wasmModule from "../pkg/iroh_do_wasm_bg.wasm";
 import * as glue from "../pkg/iroh_do_wasm.js";
-import { log } from "./log";
+import wasmModule from "../pkg/iroh_do_wasm_bg.wasm";
+import { log } from "./log.js";
 
+/** Marks `globalThis.setTimeout` as wrapped, so that a second copy of this module does not wrap it again. */
+const ROUND_UP = Symbol.for("iroh-do.setTimeout.roundUp");
+installTimerRoundUp();
 glue.initSync({ module: wasmModule });
 
 let generation = 0;
@@ -22,17 +24,15 @@ let generation = 0;
 let trapped: string | null = null;
 let configured = -1;
 let logLevel: string | undefined;
-let timersInstalled = false;
 
 /**
  * Returns the current instance's generation. Instantiates the module again first if the
  * current one trapped, and configures a new instance (log subscriber, panic handler).
  *
- * Call only at the start of an event, with no wasm frame on the stack.
+ * Call only with no wasm frame on the stack: at the start of an event, or in a microtask.
  */
 export function instance(level?: string): number {
   if (logLevel === undefined && level !== undefined) logLevel = level;
-  installTimers();
   if (trapped !== null) {
     const reason = trapped;
     trapped = null;
@@ -79,23 +79,37 @@ function onPanic(message: string): void {
 }
 
 /**
- * Adds 1 ms to every `setTimeout` delay (formerly `crates/iroh-do/src/glue/timers.rs`).
+ * Makes every `setTimeout` in the isolate fire 1 ms later than asked (formerly
+ * `crates/iroh-do/src/glue/timers.rs`; design.md, "Time").
  *
- * n0-future truncates timer delays to whole milliseconds before calling `setTimeout`. Under
- * Cloudflare's clock a noq timer then fires before its deadline, sees it not yet reached, and
- * re-arms with a zero delay that never advances the clock (design.md, "Time"). Adding 1 ms
- * guarantees `when >= deadline`. n0-future looks `setTimeout` up on `globalThis` at every
- * call, so replacing the property covers every iroh and noq timer.
+ * Why: n0-future's wasm `sleep` (n0-future 0.3.2, `src/time.rs`, `sleep_impl` and
+ * `Sleep::reset`) passes `duration.as_millis()` to `setTimeout`, which truncates. Under
+ * Cloudflare's clock, which advances only between events, a noq timer then fires before its
+ * deadline, finds it not reached, and re-arms with a delay that truncates to 0: a loop that
+ * never advances the clock. One more millisecond guarantees `when >= deadline`.
+ *
+ * Why globally: n0-future looks `setTimeout` up on `globalThis` at every call, through its
+ * own wasm-bindgen import, so no stock dependency lets this module give it a private timer.
+ * The Rust host patches the same property for the same reason.
+ *
+ * What it changes: every `setTimeout(callback, ms, ...args)` in the isolate, the app's and
+ * other libraries' included, runs after `max(0, floor(ms)) + 1` ms. The handle, the callback
+ * and its arguments are unchanged; `clearTimeout`, `setInterval` and `scheduler.wait` are
+ * untouched. Installed once, when this module is first evaluated.
+ *
+ * The fix belongs upstream: n0-future rounding the delay up (`as_micros().div_ceil(1000)`)
+ * instead of truncating would make this patch unnecessary.
  */
-function installTimers(): void {
-  if (timersInstalled) return;
-  timersInstalled = true;
-  const original = globalThis.setTimeout;
+function installTimerRoundUp(): void {
+  const current = globalThis.setTimeout as typeof setTimeout & { [ROUND_UP]?: true };
+  if (current[ROUND_UP]) return;
+  const original = current.bind(globalThis);
   const wrapped = (callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
     const d = typeof ms === "number" && Number.isFinite(ms) && ms > 0 ? Math.floor(ms) : 0;
     return original(callback, d + 1, ...args);
   };
-  globalThis.setTimeout = wrapped as typeof setTimeout;
+  Object.defineProperty(wrapped, ROUND_UP, { value: true });
+  globalThis.setTimeout = wrapped as unknown as typeof setTimeout;
 }
 
 /**
@@ -108,18 +122,16 @@ export function testPanicExport(): ((inTask: boolean) => void) | undefined {
   return typeof f === "function" ? (f as (inTask: boolean) => void) : undefined;
 }
 
-export {
-  BiStream,
-  Connection,
-  Endpoint,
-  EndpointAddr,
-  EndpointId,
-  RecvStream,
-  SendStream,
+export const {
+  EndpointAddr: GlueEndpointAddr,
+  EndpointId: GlueEndpointId,
   WasmNode,
   generateSecretKey,
+  liveNodes,
   pkarrConfirm,
   pkarrRecord,
   publicKeyOf,
-} from "../pkg/iroh_do_wasm.js";
+} = glue;
 export type { IngressResult, NodeHost, NodeOptions, PkarrRecord, UpgradeResult } from "../pkg/iroh_do_wasm.js";
+export type WasmNode = glue.WasmNode;
+export type GlueEndpoint = glue.Endpoint;

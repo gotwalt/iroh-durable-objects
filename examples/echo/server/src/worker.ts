@@ -2,6 +2,6 @@
 // runs. The deployment `iroh-ts` is examples/ts-deployment, which serves it beside the chat.
 import { irohRouter } from "iroh-do";
 
-export { Echo } from "./echo";
+export { Echo } from "./echo.js";
 
-export default { fetch: irohRouter({ binding: "ENDPOINTS" }) };
+export default irohRouter({ binding: "ENDPOINTS" });

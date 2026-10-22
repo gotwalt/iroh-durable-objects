@@ -70,7 +70,7 @@ own the class, and an app implements the Rust `App` trait. Consequences:
        await conn.closed();
      }
    }
-   export default { fetch: irohRouter({ binding: "ENDPOINTS" }) };
+   export default irohRouter({ binding: "ENDPOINTS" });
    ```
 
 ### Differences from `@number0/iroh`
@@ -79,10 +79,15 @@ own the class, and an app implements the Rust `App` trait. Consequences:
 |---|---|---|
 | `Array<number>` for bytes and ALPNs | `Uint8Array` | Workers APIs use `Uint8Array`; an array of numbers costs a copy and boxing per call |
 | `Endpoint.acceptNext()` loop | `protocols()` returning `{ [alpn]: { accept } }` | An object cannot wait in a loop across hibernation. This is the shape of iroh's own `ProtocolHandler` |
-| `Endpoint.bind`, builder, presets | none; `this.endpoint` has `id()`, `addr()`, `connect()` | The host binds on wake, from stored identity |
+| `Endpoint.bind`, builder, presets | none; `this.endpoint` has `id()`, `addr()`, `peers()`, `connect()` | The host binds on wake, from stored identity |
 | relays, discovery, paths, network watches | not exposed | One relay path, no UDP |
 | `EndpointId.toString()` only | adds `toZ32()`, `fromZ32()` | URLs and DNS labels use z-base-32 (004) |
-| — | no stream guard API | The wasm streams count themselves open until finished, reset, at the end or stopped, and feed the idle and silent close (005, 011) |
+| — | no stream guard API | The wasm streams count themselves open until a terminal outcome (finished, reset, failed, at the end, stopped), and feed the idle and silent close (005, 011) |
+
+The package README lists the remaining differences: errors named by their Rust
+type, `BiStream` as a plain object, `stop` and `reset` not waiting behind a
+pending read or write, and `connect` taking an `EndpointId` or an
+`EndpointAddr`.
 
 ### Connection lifetime
 
@@ -98,7 +103,7 @@ not when they are collected. *Implemented in step 1* (`crates/iroh-do-wasm/src/a
 has exactly one handler and a dial creates a different connection, so nothing else can hold
 it: the close happens whenever the handler's promise settles. A connection the app
 dials with `endpoint.connect` has no handler scope; it stays open until the app or the peer
-closes it, or the idle close does. Tested by `packages/iroh-do/test/lifetime-test.mjs`.
+closes it, or the idle close does. Tested by `packages/iroh-do/test/e2e/lifetime.test.ts`.
 
 ### Panics
 
@@ -107,7 +112,7 @@ every object in the isolate shares. The base class catches the
 `WebAssembly.RuntimeError` and reinstantiates the module. It then marks every
 object's node lost, and each object rebuilds its node on its next event from
 storage and socket attachments, the same path as a wake. *Implemented and tested in
-step 1* (`packages/iroh-do/test/panic-test.mjs`). The glue is generated with
+step 1* (`packages/iroh-do/test/e2e/panic.test.ts`). The glue is generated with
 `wasm-bindgen --experimental-reset-state-function`, whose `__wbg_reset_state`
 re-instantiates the module and makes objects and closures of the old instance throw
 instead of reaching the new one. A Rust panic hook tells the host before the trap, which
@@ -200,15 +205,18 @@ connection is dropped rather than left stalled.
     Trying each class in turn would wake one object per class per request.
   - Cost: a request for a valid id that is not cached wakes the registry, also
     for ids that were never minted. Step 1 woke the endpoint object instead.
-    Only registered ids are cached, so repeated requests for unminted ids wake
-    the registry each time.
+    An id the registry does not know is cached as unknown for 60 s, in a
+    second map with the same bound, so repeated requests for one unminted id
+    wake the registry at most once a minute per isolate; a mint in another
+    isolate becomes reachable here within that minute.
   - Endpoints minted in step 1's `iroh-ts` are not in the registry and are not
     reachable after step 2. There is no backfill: an object that is not
     reachable cannot register itself, and this deployment keeps no
     compatibility (above).
-  - Measured in Miniflare (`examples/ts-deployment/test/router-test.mjs`): in
-    a new isolate, the first status request for `E` made one registry lookup,
-    and a second status request and a relay session made none.
+  - Measured in Miniflare (the step 2 router test): in a new isolate, the
+    first status request for `E` made one registry lookup, and a second status
+    request and a relay session made none. The cache is now unit-tested
+    against a counting registry (`packages/iroh-do/test/unit/router.test.ts`).
 - **Build:** `cargo build` for wasm32 plus `wasm-bindgen --target web`, then
   `wrangler deploy --dry-run --outdir`. wrangler names the wasm file by its
   content hash. The build writes a manifest naming the main module and the
@@ -219,7 +227,7 @@ connection is dropped rather than left stalled.
   - `iroh-relay-ingress` and `iroh-do-harness` keep the native tests.
   - The harness tests the node with a Rust handler, as `library.rs` does.
   - TypeScript apps are tested in Miniflare against stock peers, as
-    `examples/echo/server/test/evict-test.mjs` does.
+    `examples/echo/server/test/e2e/evict.test.ts` does.
   - `tests/workerd/` is rewritten for the new bundle.
 - **Examples:**
   - `examples/echo` becomes a TypeScript class.
@@ -245,7 +253,7 @@ connection is dropped rather than left stalled.
   - The clients do not change (P3).
 - **Ported in step 1:** pkarr publishing at mint (Rust builds, signs and checks the
   record in `iroh_do_core::pkarr`; TypeScript does the `fetch`, the retries and the
-  republish alarm) and destroy, as the RPC `destroy()`. Step 2 ported the registry and
+  republish alarm) and destroy, as the RPC `irohDestroy()`. Step 2 ported the registry and
   the endpoint list (above).
 - **Migrations (step 2).** Adding `Chat` and `Registry` to the live `iroh-ts`
   script needs a second Durable Object migration. `deploy/tofu` takes a list of

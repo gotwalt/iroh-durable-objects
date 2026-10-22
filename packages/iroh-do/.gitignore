@@ -1,3 +1,5 @@
 pkg/
-test/dist/
-test/worker-configuration.d.ts
+pkg-test/
+dist/
+types/
+test/fixture/dist/

@@ -198,21 +198,38 @@ in one script, with the registry (class `Registry`).
   transport into one wasm module with `wasm-bindgen --target web`, without
   workers-rs. It holds no Cloudflare types. TypeScript passes it socket ids,
   bytes and session snapshots, and receives frames through one callback.
-- `packages/iroh-do` exports `IrohDurableObject` and `irohRouter`.
+- `packages/iroh-do` exports `IrohDurableObject` and `irohRouter`. It builds
+  to JavaScript and declarations in `dist/` and ships the prebuilt wasm module;
+  its test helpers are the separate package `packages/iroh-do-testing`.
   - The class owns the platform: the relay upgrade, hibernatable WebSockets and
     their attachments, the alarm and the schedule table, the identity and the
-    counters in `iroh_*` tables, and Workers RPC for mint, status and destroy.
+    counters in `iroh_*` tables, and Workers RPC for mint, status and destroy
+    (`irohMint`, `irohStatus`, `irohDestroy`).
   - Apps register handlers by ALPN in the shape of iroh's `ProtocolHandler`,
     and use `this.ctx.storage.sql` directly.
   - The connection and stream API follows iroh's Node bindings,
     `@number0/iroh`. The package README lists the differences.
+- Mint stores the identity, builds the node (the app's `protocols()`
+  included) and runs the app's `onMinted()` in one storage transaction; a later
+  build is a transaction too. A build that throws stores nothing and is retried
+  on the next event.
 - An accepted connection is closed with reason `done` when its handler's
-  promise settles. Stream halves count as open until they are finished, reset,
-  read to the end or stopped, which drives the idle and silent close without a
-  guard API.
+  promise settles. A stream half counts as open until it reaches a terminal
+  outcome (finished, reset, a failed write, `stopped()`; the end, a failed read,
+  stopped), which drives the idle and silent close without a guard API.
 - A panic traps the isolate's wasm instance. The class reinstantiates the
-  module, and every object rebuilds its node on its next event from storage and
-  socket attachments, as on a wake.
+  module, and every object rebuilds its node on its next entry point, an access
+  to `this.endpoint` included, from storage and socket attachments, as on a
+  wake. The object's `nodeSignal` aborts, so that an app drops connections and
+  streams of the old node.
+- The wasm side keys each node's state by the node, not by its EndpointId, and
+  holds the object's callbacks weakly; a node the garbage collector frees
+  removes its state.
+- Alarm work is deleted only after it has run. Work that throws or traps is
+  retried after 30 s, doubling up to an hour, and the alarm is re-armed whatever
+  happens, so a trap cannot leave due work without an alarm.
+- Every `setTimeout` in the isolate fires 1 ms late, as on the Rust host
+  ([Time](#time)); the package README states the scope.
 - An object constructed while its endpoint was bound logs `evicted_active`.
 - Each app is its own Durable Object class. Mint takes the app's name, as on the
   Rust host (`{"app": "chat", "label": …}`), and records `E → app` in the
@@ -221,7 +238,8 @@ in one script, with the registry (class `Registry`).
   isolate; the mapping never changes after mint. The endpoint list is served
   from the same registry, as in [Endpoint list](#endpoint-list). A request for
   a valid id that the isolate has not cached wakes the registry, not the
-  endpoint's object.
+  endpoint's object; an id the registry does not know is cached as such for
+  60 s. The unauthenticated status omits the host's fields.
 - Apps schedule alarm work with `schedule(key, delayMs)` and run it in
   `onAlarm`, and add status fields with `appStatus()`: the equivalents of
   `Ctx::schedule`, `App::on_alarm` and `App::status`. The chat class uses them

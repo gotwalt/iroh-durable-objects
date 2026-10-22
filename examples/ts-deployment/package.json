@@ -8,13 +8,15 @@
     "iroh-do-chat-server": "*",
     "iroh-do-echo-server": "*"
   },
+  "devDependencies": {
+    "iroh-do-testing": "0.1.0"
+  },
   "scripts": {
-    "build": "iroh-do-bundle --config wrangler.toml --outdir dist",
+    "build": "npm --prefix ../.. run build -w iroh-do && iroh-do-bundle --config wrangler.toml --outdir dist",
     "types": "wrangler types",
-    "check": "npm run types && tsc --noEmit",
+    "check": "npm run types && tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
     "dev": "wrangler dev --local --ip 127.0.0.1 --port ${LOCAL_PORT:-8799} --inspector-port $((${LOCAL_PORT:-8799} + 1000))",
-    "test:router": "node test/router-test.mjs",
-    "test:room": "vitest run test/room.test.mjs",
-    "test": "npm run test:router && npm run test:room"
+    "test:e2e": "npm run build && vitest run",
+    "test": "npm run test:e2e"
   }
 }

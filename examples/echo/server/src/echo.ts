@@ -1,8 +1,15 @@
 // iroh's echo example (iroh 1.4.0 examples/echo.rs) as a TypeScript Durable Object.
-import { IrohDurableObject, type Connection, type Timings } from "iroh-do";
+import { type Connection, IrohDurableObject, type Timings } from "iroh-do";
+import { milliseconds } from "./config.js";
 
-export class Echo extends IrohDurableObject<Env> {
-  static app = "echo";
+/** The vars the class reads; tests shorten the limits through them. */
+export interface EchoEnv {
+  T_IDLE_MS?: string;
+  T_SILENT_MS?: string;
+}
+
+export class Echo extends IrohDurableObject<EchoEnv> {
+  static override app = "echo";
 
   protocols() {
     return { "iroh-example/echo/0": { accept: (c: Connection) => this.serve(c) } };
@@ -16,10 +23,10 @@ export class Echo extends IrohDurableObject<Env> {
     await conn.closed();
   }
 
-  // Tests shorten the limits through vars; the deployment leaves them unbound.
   protected override timings(): Timings {
-    const n = (v: string | undefined) => (v === undefined || v === "" ? undefined : Number(v));
-    const env = this.env as unknown as Record<string, string | undefined>;
-    return { tIdleMs: n(env.T_IDLE_MS), tSilentMs: n(env.T_SILENT_MS) };
+    return {
+      tIdleMs: milliseconds(this.env.T_IDLE_MS, "T_IDLE_MS"),
+      tSilentMs: milliseconds(this.env.T_SILENT_MS, "T_SILENT_MS"),
+    };
   }
 }
