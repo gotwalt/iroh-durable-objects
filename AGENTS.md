@@ -53,6 +53,15 @@ that reviews refer to; `docs/design-notes/` records every change to it.
       Miniflare.
     - `npm --prefix examples/echo/server run check`, `run build` and `test`:
       mint, pkarr, destroy, forced hibernation and the eviction marker.
+    - `npm --prefix examples/chat/server run check`, and `npm --prefix
+      examples/ts-deployment run check`, `run build` and `test` (after `cargo
+      build -p iroh-do-chat`): the deployment `iroh-ts` with the chat and echo
+      classes; routing through the registry and its cache, the endpoint list,
+      and two stock `iroh-do-chat` members across a forced hibernation.
+    - The chat app on workerd: `npm --prefix examples/ts-deployment run dev`
+      (port `LOCAL_PORT`, default 8799), mint with `{"app":"chat"}`, then
+      `cargo run -p iroh-do-chat -- --local --local-port 8799 lifecycle <E>
+      --room`.
     - The test peers must be found at `target/debug`; with a different
       `CARGO_TARGET_DIR`, set `IROH_DO_DEMO` and `IROH_DO_ECHO` for
       `tests/workerd/evict-test.mjs`.

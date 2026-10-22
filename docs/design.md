@@ -189,8 +189,10 @@ handler, unchanged). `docs/writing-an-app.md` describes writing one.
 [`design-notes/013`](design-notes/013-typescript-host.md) moves the Durable
 Object class to TypeScript. The move is in progress. The Rust host described in
 the rest of this document still serves the deployment `iroh-do`. The TypeScript
-host serves a second deployment, `iroh-ts` (`*.iroh-ts.<zone>`), which runs the
-echo app.
+host serves a second deployment, `iroh-ts` (`*.iroh-ts.<zone>`, built from
+`examples/ts-deployment`), which runs the chat app (class `Chat`,
+`examples/chat/server`) and the echo app (class `Echo`, `examples/echo/server`)
+in one script, with the registry (class `Registry`).
 
 - `crates/iroh-do-wasm` builds the ingress, the node, the endpoint and the
   transport into one wasm module with `wasm-bindgen --target web`, without
@@ -212,8 +214,26 @@ echo app.
   module, and every object rebuilds its node on its next event from storage and
   socket attachments, as on a wake.
 - An object constructed while its endpoint was bound logs `evicted_active`.
+- Each app is its own Durable Object class. Mint takes the app's name, as on the
+  Rust host (`{"app": "chat", "label": …}`), and records `E → app` in the
+  registry before the object stores its identity. The router finds the class
+  of `E` by asking the registry over Workers RPC, and caches the answer per
+  isolate; the mapping never changes after mint. The endpoint list is served
+  from the same registry, as in [Endpoint list](#endpoint-list). A request for
+  a valid id that the isolate has not cached wakes the registry, not the
+  endpoint's object.
+- Apps schedule alarm work with `schedule(key, delayMs)` and run it in
+  `onAlarm`, and add status fields with `appStatus()`: the equivalents of
+  `Ctx::schedule`, `App::on_alarm` and `App::status`. The chat class uses them
+  for dial-backs, the log prune and `records`, `members` and `present`.
+- The chat class keeps a room connection it may reuse, accepted or dialed, in a
+  map, with its handler's promise pending until the connection closes, so the
+  node does not close it with reason `done`. Its 50 ms delivery batch is a
+  JavaScript timer; the endpoint stays bound through it because the linger
+  (2 s) is longer.
 - The build writes a `manifest.json` naming the bundle's modules. `deploy/tofu`
-  uploads a deployment from it.
+  uploads a deployment from it, and sends the Durable Object migrations the
+  live script has not applied yet (`v1`: `Echo`; `v2`: `Chat`, `Registry`).
 
 Evidence, from Miniflare and from production, is in
 [`verification/ts-host.md`](verification/ts-host.md).

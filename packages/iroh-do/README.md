@@ -1,7 +1,7 @@
 # iroh-do (TypeScript)
 
 iroh endpoints as TypeScript Durable Objects, reachable by stock iroh peers. This is
-step 1 of design note 013: the TypeScript class owns the Durable Object, and
+design note 013, steps 1 and 2: the TypeScript class owns the Durable Object, and
 `crates/iroh-do-wasm` is a wasm library that keeps what has to be iroh (the relay
 ingress, the endpoint and its Cold/Warm/Active lifecycle, keys, the pkarr record, the
 JSON log layer).
@@ -23,7 +23,9 @@ export class Echo extends IrohDurableObject<Env> {
 export default { fetch: irohRouter({ binding: "ENDPOINTS" }) };
 ```
 
-`examples/echo/server` is this app, with its `wrangler.toml`.
+`examples/echo/server` is this app, with its `wrangler.toml`. `examples/chat/server` is
+the chat app (class `Chat`), and `examples/ts-deployment` is the deployment `iroh-ts`, which
+serves both from one script (see [Several apps](#several-apps)).
 
 ## Building a bundle
 
@@ -83,8 +85,9 @@ bundle (`npm run build:test` here, into `test/dist`) is built with `test-panic`.
 | `LOG_LEVEL` | wasm | tracing directives (design note 010). |
 | `BUNDLE_SHA256` | object | Reported in the status. |
 
-`examples/echo/server` binds the class `Echo` as `ENDPOINTS` in the script `iroh-ts`, so its
-namespace is `iroh-ts_Echo`.
+`examples/ts-deployment` binds `Echo` as `ENDPOINTS`, `Chat` as `CHAT` and `Registry` as
+`REGISTRY` in the script `iroh-ts`, so the namespaces are `iroh-ts_Echo`, `iroh-ts_Chat` and
+`iroh-ts_Registry`.
 
 ## Router
 
@@ -99,7 +102,38 @@ namespace is `iroh-ts_Echo`.
 | `GET admin.<zone>/status/<E>` | Calls `status()` on `E`, or 404. |
 
 Anything else is 404 without touching an object. Router-to-object calls are Workers RPC.
-The endpoint list and the registry object of the Rust deployment are not part of step 1.
+
+### Several apps
+
+A deployment with several apps exports one class per app and the registry:
+
+```ts
+import { IrohRegistry, irohRouter } from "iroh-do";
+export { Chat } from "iroh-do-chat-server";
+export { Echo } from "iroh-do-echo-server";
+export class Registry extends IrohRegistry {}
+
+export default {
+  fetch: irohRouter({
+    apps: {
+      chat: { binding: "CHAT", joinHint: (id) => `iroh-do-chat ${id}` },
+      echo: { binding: "ENDPOINTS", joinHint: (id) => `iroh-do-echo-client ${id}` },
+    },
+    registry: "REGISTRY",
+  }),
+};
+```
+
+`IrohRegistry` is the registry object of design note 009: one instance, named `registry`,
+with the table `endpoints(id, app, label, minted_at)`. The router then also serves:
+
+| Request | |
+|---|---|
+| `POST admin.<zone>/mint` (token) | The body may name the app and a label, `{"app": "echo", "label": "…"}` (label at most 64 characters, no control characters). No app: the first. An unknown app is a 400 naming the deployment's apps. Records `E → app` in the registry, then mints the object; if the mint fails, the entry is removed. Returns `{id, app, relay_url, published}`. |
+| `GET admin.<zone>/`, `/endpoints.json` | The endpoint list, newest first, at most 500, with each app's join hint. Public, as on the Rust host. |
+| relay, status, destroy for `E` | The class is `E`'s app's, read from the registry over RPC and cached in the isolate. `E → app` never changes after mint. A valid id that is not registered is a 404. Destroy removes `E` from the registry after the object; if that fails, 502 and a retry removes it. |
+
+A request for a valid id that the isolate has not cached wakes the registry.
 
 ## The object
 
@@ -116,9 +150,25 @@ runs. Building it restores the ingress session of every socket from its attachme
 |---|---|
 | `iroh_identity` | Secret key, EndpointId, relay URL, pkarr relay, mint time. Written once, at mint. |
 | `iroh_state` | `wakes`, `endpoint_builds`, `node_rebuilds`, `bound_at_ms`, `pkarr_failures`, `pkarr_status`, `pkarr_ok_ms`. |
-| `iroh_schedule` | Alarm work: `sweep` (handshake deadlines), `republish` (pkarr), and the node's `app:` keys. |
+| `iroh_schedule` | Alarm work: `sweep` (handshake deadlines), `republish` (pkarr), and the app's keys under `app:`. |
 
 An object writes nothing until it is minted.
+
+### What an app overrides
+
+| Member | Rust host equivalent | |
+|---|---|---|
+| `protocols()` | `App::protocols` | Handlers by ALPN. Called once per node build, only in a minted object, so an app also creates its tables here (`App::schema`). |
+| `onAlarm(key, payload)` | `App::on_alarm` | Runs work scheduled with `this.schedule(key, delayMs, payload)` (`Ctx::schedule`), from the alarm; `this.cancel(key)` removes it. If `onAlarm` throws, the work runs again after 30 s. |
+| `appStatus()` | `App::status` | Fields added to the status. `this.endpointStatus()` returns the whole status as a Rust app's `Ctx::status` does, with keys sorted. |
+| `static app` | `App::NAME` | Reported as `app` in the status. |
+| `static namespace` | | The binding of the class's namespace, for the name check. Default `ENDPOINTS`. |
+| `timings()` | `Config` | `t_idle`, `t_silent`, `t_linger`. |
+
+`this.endpoint.peers()` lists the peers with a relay socket (`Ctx::peers`, `has_socket`), and
+`this.endpoint.connect(peer, alpn)` dials one of them back (`Ctx::connect`). There is no
+equivalent of `Ctx::spawn`: an app's promises keep the endpoint bound only while they hold a
+connection, or until the linger (2 s) after the last one closes.
 
 ### pkarr
 
@@ -188,6 +238,11 @@ that wrote it, so Cloudflare's per-invocation CPU time can be joined to sessions
 | `alarm` | info | `endpoint`, `due`, `ran`, `ms` | One alarm run. `due` lists kinds, never a peer. |
 | `socket_close` | info, warn | `endpoint`, `by`, `code`, `reason`, `clean`, `error` | A relay socket closed by the peer (`by` `peer`) or with an error. |
 | `admin_auth` | info, warn | `ok`, `path` | A mint or destroy token was checked. |
+| `alarm_failed` | warn | `endpoint`, `due`, `error`, `retry_in_s` | The app's `onAlarm` threw; the work runs again later. |
+| `registry_register` | info | `endpoint`, `from`, `ok` | The router recorded a new endpoint (`from: 'mint'`). |
+| `registry_entry`, `registry_remove` | info | `endpoint`, `app` | The registry stored or removed an entry. |
+| `mint_failed` | error | `endpoint`, `app`, `error` | The object refused the mint; the registry entry is removed. |
+| `route_unknown_app` | warn | `endpoint`, `app` | The registry names an app this deployment does not have; 404. |
 
 The bind marker is `bound_at_ms` in `iroh_state`: set when the node binds an endpoint,
 cleared when it closes the endpoint after `t_linger`. Hibernation happens only in Warm,
@@ -223,6 +278,12 @@ cd examples/echo/server && npm run check && npm run build && npm test   # admin 
 - `examples/echo/server/test/admin-test.mjs`: mint with pkarr (a fake relay), destroy.
 - `examples/echo/server/test/evict-test.mjs`: forced hibernation, idle and silent closes,
   `evicted_active`.
+- `examples/ts-deployment/test/router-test.mjs`: mint by app, the endpoint list, class
+  resolution through the registry and its cache, destroy.
+- `examples/ts-deployment/test/room-test.mjs`: the chat room with two present stock
+  `iroh-do-chat` members across a forced hibernation, dial-back delivery and connection
+  reuse.
 
-The peer is `crates/iroh-do-test-peer`: stock iroh with default features, no iroh-do crate.
-The tests use ports 8818–8821 and, for the fake pkarr relay, 8921.
+The peers are `crates/iroh-do-test-peer` and `examples/chat/client` (`iroh-do-chat`): stock
+iroh with default features, no iroh-do crate. The tests use ports 8818–8821, 8830 and 8832
+and, for the fake pkarr relay, 8921.
