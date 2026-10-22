@@ -3,6 +3,7 @@
 //! the network task never touches the terminal.
 
 use std::{
+    io::Write,
     process::ExitCode,
     sync::{
         Arc,
@@ -206,6 +207,8 @@ pub struct App {
     older_pending: bool,
     older_done: bool,
     left: bool,
+    /// A message from another member arrived live since the last draw.
+    ring: bool,
 }
 
 impl App {
@@ -225,12 +228,18 @@ impl App {
             older_pending: false,
             older_done: false,
             left: false,
+            ring: false,
         }
     }
 
     /// Whether the member left with `/quit`.
     pub fn left(&self) -> bool {
         self.left
+    }
+
+    /// Whether to ring the bell, clearing the request.
+    pub fn take_ring(&mut self) -> bool {
+        std::mem::take(&mut self.ring)
     }
 
     /// The message pane's logical lines.
@@ -261,6 +270,11 @@ impl App {
         let today = chrono::Local::now().date_naive();
         match u {
             Update::Event { ev, origin, .. } => {
+                // The room does not deliver a member's own events back to it, so a
+                // live message is always from someone else.
+                if origin == Origin::Live && matches!(ev, Event::Msg { .. } | Event::Act { .. }) {
+                    self.ring = true;
+                }
                 let kind = match (&ev, origin) {
                     (Event::Err { .. }, _) => Kind::Error,
                     (Event::Who { .. }, _) => Kind::Notice,
@@ -551,7 +565,7 @@ impl Drop for Restore {
 }
 
 /// Runs the interactive client until the user exits or leaves.
-pub async fn run(target: &Target, opts: Options) -> Result<ExitCode> {
+pub async fn run(target: &Target, opts: Options, bell: bool) -> Result<ExitCode> {
     let (up_tx, mut updates) = mpsc::unbounded_channel();
     let (cmd_tx, commands) = mpsc::unbounded_channel();
     let net_target = target.clone();
@@ -605,6 +619,12 @@ pub async fn run(target: &Target, opts: Options) -> Result<ExitCode> {
         terminal
             .draw(|f| app.draw(f))
             .std_context("drawing the terminal")?;
+        if app.take_ring() && bell {
+            // BEL: the terminal beeps or flags the window, as its settings choose.
+            let _ = std::io::stdout()
+                .write_all(b"\x07")
+                .and_then(|()| std::io::stdout().flush());
+        }
         let action = tokio::select! {
             u = updates.recv() => match u {
                 Some(u) => {
@@ -754,6 +774,32 @@ mod tests {
         app.update(Update::Older(Vec::new()));
         assert_eq!(app.scroll_up(1), Action::None);
         assert_eq!(app.lines()[0].kind, Kind::Notice);
+    }
+
+    #[test]
+    fn only_live_messages_ring() {
+        let mut app = App::new("room".into());
+        let msg = |seq| Event::Msg {
+            seq,
+            prev: 0,
+            ts: 0,
+            peer: "p".into(),
+            nick: "ana".into(),
+            text: "x".into(),
+        };
+        for (seq, origin, rings) in [
+            (1, Origin::Hist, false),
+            (2, Origin::Own, false),
+            (3, Origin::Live, true),
+        ] {
+            app.update(Update::Event {
+                ev: msg(seq),
+                raw: String::new(),
+                origin,
+            });
+            assert_eq!(app.take_ring(), rings, "{origin:?}");
+        }
+        assert!(!app.take_ring());
     }
 
     #[test]

@@ -371,6 +371,9 @@ struct ChatArgs {
     /// Without a UI: join, then print events as JSON lines for SECS seconds.
     #[arg(long, value_name = "SECS")]
     listen_for: Option<u64>,
+    /// Do not ring the terminal bell when another member's message arrives.
+    #[arg(long)]
+    no_bell: bool,
 }
 
 const CHAT_HELP: &str = "\
@@ -410,7 +413,7 @@ async fn chat(target: &Target, args: ChatArgs) -> Result<ExitCode> {
             std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
             "chat needs a terminal; use --say or --listen-for without one"
         );
-        return tui::run(target, opts).await;
+        return tui::run(target, opts, !args.no_bell).await;
     }
     let listen = args.listen_for.is_some();
     let (tx, mut updates) = tokio::sync::mpsc::unbounded_channel();
