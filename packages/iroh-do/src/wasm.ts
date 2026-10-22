@@ -78,7 +78,6 @@ function onPanic(message: string): void {
   });
 }
 
-
 /**
  * Makes every `setTimeout` in the isolate fire 1 ms later than asked (formerly
  * `crates/iroh-do/src/glue/timers.rs`; design.md, "Time").

@@ -8,18 +8,18 @@ import type { EndpointAddrConstructor, EndpointIdStatic } from "./types.js";
 import { GlueEndpointAddr, GlueEndpointId } from "./wasm.js";
 
 export type { IrohVars } from "./env.js";
-export { NodeBuildError, NodeLostError, type NodeLostCause, NodeTrappedError, NotMintedError } from "./errors.js";
+export { NodeBuildError, type NodeLostCause, NodeLostError, NodeTrappedError, NotMintedError } from "./errors.js";
 export { type Level, log } from "./log.js";
 export {
   type DestroyResult,
   type EndpointStatus,
   type HostStatus,
-  type JsonScalar,
-  type StatusValue,
   IrohDurableObject,
+  type JsonScalar,
   type MintResult,
   type ProtocolHandler,
   type Protocols,
+  type StatusValue,
   type Timings,
 } from "./object.js";
 export {

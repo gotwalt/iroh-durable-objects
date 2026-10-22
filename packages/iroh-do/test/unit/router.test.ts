@@ -35,7 +35,10 @@ describe("admin surface", () => {
   it("unknown app, long label and control characters are 400", async () => {
     const post = (body: unknown) => get("/mint", { method: "POST", headers: auth, body: JSON.stringify(body) });
     const unknown = await post({ app: "nope" });
-    expect([unknown.status, await unknown.text()]).toEqual([400, 'unknown app; this deployment has ["test", "broken"]']);
+    expect([unknown.status, await unknown.text()]).toEqual([
+      400,
+      'unknown app; this deployment has ["test", "broken"]',
+    ]);
     expect((await post({ label: "é".repeat(65) })).status).toBe(400);
     expect((await post({ label: "a\u0085b" })).status).toBe(400);
   });

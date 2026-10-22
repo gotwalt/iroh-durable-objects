@@ -14,9 +14,14 @@ export class TestEndpoint extends IrohDurableObject {
   static override app = "test";
   /** Aborts of `nodeSignal` seen by this construction. */
   #lost: string[] = [];
+  /** `endpointId` as `protocols()` saw it. */
+  #idInProtocols: string | null = null;
 
   protocols(): Protocols {
-    this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS runs (key TEXT PRIMARY KEY, n INTEGER NOT NULL)");
+    this.ctx.storage.sql.exec(
+      "CREATE TABLE IF NOT EXISTS runs (key TEXT PRIMARY KEY, n INTEGER NOT NULL, attempt INTEGER NOT NULL)",
+    );
+    this.#idInProtocols = this.endpointId;
     const signal = this.nodeSignal;
     signal.addEventListener("abort", () => this.#lost.push(String(signal.reason)), { once: true });
     return {
@@ -31,10 +36,11 @@ export class TestEndpoint extends IrohDurableObject {
     };
   }
 
-  protected override onAlarm(key: string): void {
+  protected override onAlarm(key: string, _payload: string, attempt: number): void {
     this.ctx.storage.sql.exec(
-      "INSERT INTO runs (key, n) VALUES (?, 1) ON CONFLICT(key) DO UPDATE SET n = n + 1",
+      "INSERT INTO runs (key, n, attempt) VALUES (?, 1, ?) ON CONFLICT(key) DO UPDATE SET n = n + 1, attempt = excluded.attempt",
       key,
+      attempt,
     );
     switch (behaviour(key)) {
       // What a trap looks like to JavaScript; `noteTrap` cannot tell it from a real one, and
@@ -66,9 +72,29 @@ export class TestEndpoint extends IrohDurableObject {
     return out;
   }
 
+  /** RPC: the `attempt` each key's last run saw. */
+  async attempts(): Promise<Record<string, number>> {
+    const out: Record<string, number> = {};
+    for (const r of this.ctx.storage.sql.exec("SELECT key, attempt FROM runs").toArray()) {
+      out[String(r.key)] = Number(r.attempt);
+    }
+    return out;
+  }
+
+  /** RPC: what `onMinted` stored. */
+  async mintedNote(): Promise<string | null> {
+    const row = this.ctx.storage.sql.exec("SELECT note FROM minted").toArray()[0];
+    return row ? String(row.note) : null;
+  }
+
+  protected override onMinted(): void {
+    this.ctx.storage.sql.exec("CREATE TABLE minted (note TEXT NOT NULL)");
+    this.ctx.storage.sql.exec("INSERT INTO minted (note) VALUES (?)", `minted ${this.endpointId}`);
+  }
+
   /** RPC, not wrapped by the base class: reads the endpoint as a subclass method would. */
-  async probe(): Promise<{ id: string; lost: string[] }> {
-    return { id: this.endpoint.id().toZ32(), lost: [...this.#lost] };
+  async probe(): Promise<{ id: string; idInProtocols: string | null; lost: string[] }> {
+    return { id: this.endpoint.id().toZ32(), idInProtocols: this.#idInProtocols, lost: [...this.#lost] };
   }
 
   /** RPC: traps inside `withNode`. */

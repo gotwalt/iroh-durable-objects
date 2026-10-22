@@ -1,7 +1,8 @@
 // The base class in workerd: the alarm's schedule table under failures and traps (A-B1),
 // staleness after another object's trap (A-B2), and mint and build failures (A-M1).
-import { env, exports } from "cloudflare:workers";
+
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { generateSecretKey, publicKeyOf } from "../../src/wasm.js";
 import type { TestEndpoint } from "./worker.js";
@@ -42,9 +43,9 @@ async function alarmAt(s: DurableObjectStub<TestEndpoint>): Promise<number | nul
 async function seed(s: DurableObjectStub<TestEndpoint>, keys: string[]): Promise<void> {
   await runInDurableObject(s, async (_o, state) => {
     const t = Date.now() - 1000;
-    keys.forEach((k, i) =>
-      state.storage.sql.exec("INSERT INTO iroh_schedule (key, due_ms, payload) VALUES (?, ?, '')", `app:${k}`, t + i),
-    );
+    for (const [i, k] of keys.entries()) {
+      state.storage.sql.exec("INSERT INTO iroh_schedule (key, due_ms, payload) VALUES (?, ?, '')", `app:${k}`, t + i);
+    }
     await state.storage.setAlarm(Date.now() + 3_600_000);
   });
 }
@@ -86,6 +87,25 @@ describe("alarm", () => {
     expect((await s.irohStatus())?.rebuilds).toBe(1);
   });
 
+  it("backs off: the delay doubles per failed run, and onAlarm sees the attempt", async () => {
+    const s = stub(await mint());
+    await seed(s, ["throw-twice"]);
+    await runDurableObjectAlarm(s);
+    const first = (await schedule(s)).get("app:throw-twice") ?? 0;
+    // Make the moved row due again, and run it.
+    await runInDurableObject(s, async (_o, state) => {
+      state.storage.sql.exec("UPDATE iroh_schedule SET due_ms = ? WHERE key = 'app:throw-twice'", Date.now() - 1);
+      await state.storage.setAlarm(Date.now() + 3_600_000);
+    });
+    const t1 = Date.now();
+    await runDurableObjectAlarm(s);
+    const second = (await schedule(s)).get("app:throw-twice") ?? 0;
+    expect(first).toBeGreaterThan(0);
+    expect(second - t1).toBeGreaterThanOrEqual(59_000);
+    expect(second - t1).toBeLessThan(61_000);
+    expect(await s.attempts()).toEqual({ "throw-twice": 2 });
+  });
+
   it("deletes the alarm once no row is left", async () => {
     const s = stub(await mint());
     await seed(s, ["ok"]);
@@ -112,6 +132,13 @@ describe("staleness after a wasm reset", () => {
 });
 
 describe("mint and build", () => {
+  it("endpointId is available in protocols() and onMinted()", async () => {
+    const id = await mint();
+    const s = stub(id);
+    expect(await s.mintedNote()).toBe(`minted ${id}`);
+    expect((await s.probe()).idInProtocols).toBe(id);
+  });
+
   it("schedule() before mint throws NotMintedError", async () => {
     const s = env.ENDPOINTS.get(env.ENDPOINTS.idFromName("ybndrfg8ejkmcpqxot1uwisza345h769ybndrfg8ejkmcpqxot1u"));
     expect(await s.scheduleUnminted()).toBe("NotMintedError");

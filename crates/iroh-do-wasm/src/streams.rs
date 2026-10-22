@@ -442,11 +442,15 @@ impl RecvStream {
 
 #[wasm_bindgen]
 impl RecvStream {
-    /// Reads up to `sizeLimit` bytes. Resolves with an empty array at the end of the stream.
+    /// Reads up to `sizeLimit` bytes, at least 1. Resolves with an empty array at the end of
+    /// the stream, as `@number0/iroh` does, and only then: a chunk is never empty.
     #[wasm_bindgen(unchecked_return_type = "Promise<Uint8Array>")]
     pub fn read(&self, #[wasm_bindgen(js_name = sizeLimit)] size_limit: usize) -> Promise {
         let this = self.clone();
         future_to_promise(async move {
+            if size_limit == 0 {
+                return Err(named_err("RangeError", "sizeLimit must be at least 1"));
+            }
             touch(&this.0.activity);
             let _io = this.0.io.lock().await;
             let chunk = this.chunk(size_limit).await?;

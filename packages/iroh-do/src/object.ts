@@ -3,7 +3,7 @@
 // the iroh endpoint and its lifecycle, and the Connection and stream API.
 import { DurableObject } from "cloudflare:workers";
 import { namespaceVar, stringVar } from "./env.js";
-import { NodeBuildError, NodeLostError, type NodeLostCause, NodeTrappedError, NotMintedError } from "./errors.js";
+import { NodeBuildError, type NodeLostCause, NodeLostError, NodeTrappedError, NotMintedError } from "./errors.js";
 import { log } from "./log.js";
 import type { Connection, Endpoint } from "./types.js";
 import {
@@ -130,8 +130,12 @@ const SWEEP = "sweep";
 const REPUBLISH = "republish";
 /** Prefix of the app's schedule keys, the one `iroh_do_core::Ctx::schedule` uses. */
 const APP_KEY = "app:";
-/** Delay before alarm work that failed runs again (design.md, "Failure handling"). */
+/** First delay before alarm work that failed runs again (design.md, "Failure handling"). */
 const RETRY_MS = 30 * 1000;
+/** Longest delay between retries of failed alarm work. */
+const RETRY_MAX_MS = 60 * 60 * 1000;
+/** `iroh_state` name prefix of the failed-run count of a schedule key. */
+const ATTEMPTS = "attempts:";
 /** Close code and reason for the sockets of a destroyed endpoint. */
 const CLOSE_DESTROYED = 1000;
 
@@ -226,10 +230,22 @@ export abstract class IrohDurableObject<Env = unknown> extends DurableObject<Env
   /**
    * Runs work the app scheduled with `schedule(key, ...)`. Called from the alarm, with the
    * node built but not necessarily bound. Runs at least once per schedule: if it throws, or
-   * the instance traps or the object is evicted while it runs, it runs again, after 30 s in
-   * the first two cases. It must therefore be idempotent.
+   * the instance traps or the object is evicted while it runs, it runs again. After a throw
+   * or a trap the delay doubles from 30 s up to an hour; `attempt` counts the runs of this
+   * schedule, from 1. It must therefore be idempotent; to give up, return without throwing.
    */
-  protected onAlarm(_key: string, _payload: string): void | Promise<void> {}
+  protected onAlarm(_key: string, _payload: string, _attempt: number): void | Promise<void> {
+    // Nothing by default: only an app schedules work.
+  }
+
+  /**
+   * Called once, when the object is minted: inside the transaction that stores the identity
+   * and builds the node, after `protocols()`. If it throws, the mint fails and nothing is
+   * stored. For the app's initial state.
+   */
+  protected onMinted(): void {
+    // Nothing by default.
+  }
 
   /** Fields the app adds to the endpoint's status. */
   protected appStatus(): Record<string, unknown> {
@@ -243,12 +259,14 @@ export abstract class IrohDurableObject<Env = unknown> extends DurableObject<Env
    */
   protected schedule(key: string, delayMs: number, payload = ""): void {
     this.#requireMinted();
+    this.#put(ATTEMPTS + APP_KEY + key, null);
     this.#schedule(APP_KEY + key, Date.now() + delayMs, payload);
   }
 
   /** Cancels pending work scheduled with `key`. Throws `NotMintedError` before mint. */
   protected cancel(key: string): void {
     this.#requireMinted();
+    this.#put(ATTEMPTS + APP_KEY + key, null);
     this.#unschedule(APP_KEY + key);
   }
 
@@ -271,6 +289,17 @@ export abstract class IrohDurableObject<Env = unknown> extends DurableObject<Env
     this.#enter();
     if (!this.#endpoint) throw new NotMintedError();
     return this.#endpoint;
+  }
+
+  /**
+   * This endpoint's id in z-base-32. Unlike `endpoint`, available as soon as the identity is
+   * loaded, so also inside `protocols()` and `onMinted()`. Throws `NotMintedError` before
+   * mint.
+   */
+  protected get endpointId(): string {
+    if (this.#id === null) this.#enter();
+    if (this.#id === null) throw new NotMintedError();
+    return this.#id;
   }
 
   /**
@@ -304,6 +333,7 @@ export abstract class IrohDurableObject<Env = unknown> extends DurableObject<Env
   #node: WasmNode | null = null;
   #endpoint: Endpoint | null = null;
   /** The node holds its host weakly (crates/iroh-do-wasm/src/host.rs): keep it alive here. */
+  // biome-ignore lint/correctness/noUnusedPrivateClassMembers: held, never read, so that the collector keeps it.
   #host: NodeHost | null = null;
   #nodeAbort: AbortController | null = null;
   #handlers: Protocols = {};
@@ -409,7 +439,9 @@ export abstract class IrohDurableObject<Env = unknown> extends DurableObject<Env
     const ns = namespaceVar(this.env, binding);
     if (!ns) {
       log("error", "config_error", { missing: binding, class: this.constructor.name });
-      throw new Error(`binding ${binding} (static namespace of ${this.constructor.name}) is not a Durable Object namespace`);
+      throw new Error(
+        `binding ${binding} (static namespace of ${this.constructor.name}) is not a Durable Object namespace`,
+      );
     }
     return ns.idFromName(id).equals(this.ctx.id);
   }
@@ -671,14 +703,18 @@ export abstract class IrohDurableObject<Env = unknown> extends DurableObject<Env
     if (next === null) {
       if (this.#armed !== null) {
         this.#armed = null;
-        this.ctx.storage.deleteAlarm().catch((e: unknown) => log("error", "storage_failed", { op: "deleteAlarm", error: String(e) }));
+        this.ctx.storage
+          .deleteAlarm()
+          .catch((e: unknown) => log("error", "storage_failed", { op: "deleteAlarm", error: String(e) }));
       }
       return;
     }
     if (this.#armed === next) return;
     this.#armed = next;
     // A time in the past fires at once.
-    this.ctx.storage.setAlarm(next).catch((e: unknown) => log("error", "storage_failed", { op: "setAlarm", error: String(e) }));
+    this.ctx.storage
+      .setAlarm(next)
+      .catch((e: unknown) => log("error", "storage_failed", { op: "setAlarm", error: String(e) }));
   }
 
   override async fetch(req: Request): Promise<Response> {
@@ -688,7 +724,12 @@ export abstract class IrohDurableObject<Env = unknown> extends DurableObject<Env
         (node) => {
           if (!node) return new Response("not found", { status: 404 });
           const url = new URL(req.url);
-          const r = node.upgrade(req.method, url.pathname, req.headers.get("sec-websocket-protocol") ?? undefined, Date.now());
+          const r = node.upgrade(
+            req.method,
+            url.pathname,
+            req.headers.get("sec-websocket-protocol") ?? undefined,
+            Date.now(),
+          );
           if (!r.ok) return new Response(r.message, { status: r.status });
           const { 0: client, 1: server } = new WebSocketPair();
           this.ctx.acceptWebSocket(server, ["relay", `sid:${r.sid}`]);
@@ -719,7 +760,8 @@ export abstract class IrohDurableObject<Env = unknown> extends DurableObject<Env
           ws.close(1011, "refused");
           return;
         }
-        const res = typeof msg === "string" ? node.textMessage(sid) : node.message(sid, new Uint8Array(msg), Date.now());
+        const res =
+          typeof msg === "string" ? node.textMessage(sid) : node.message(sid, new Uint8Array(msg), Date.now());
         this.#apply(res, ws, sid);
       },
     );
@@ -783,7 +825,10 @@ export abstract class IrohDurableObject<Env = unknown> extends DurableObject<Env
 
   async #runDue(node: WasmNode, epoch: number): Promise<void> {
     const t0 = Date.now();
-    const due = this.#sql("SELECT key, due_ms, payload FROM iroh_schedule WHERE due_ms <= ? ORDER BY due_ms", t0).toArray();
+    const due = this.#sql(
+      "SELECT key, due_ms, payload FROM iroh_schedule WHERE due_ms <= ? ORDER BY due_ms",
+      t0,
+    ).toArray();
     const kinds: string[] = [];
     let failed = 0;
     for (const row of due) {
@@ -803,7 +848,7 @@ export abstract class IrohDurableObject<Env = unknown> extends DurableObject<Env
           // Schedules the next attempt itself.
           await this.#publish(epoch);
         } else if (key.startsWith(APP_KEY)) {
-          await this.onAlarm(key.slice(APP_KEY.length), payload);
+          await this.onAlarm(key.slice(APP_KEY.length), payload, this.#attempts(key) + 1);
           this.#complete(key, dueMs);
         } else {
           node.alarm(key, payload);
@@ -812,13 +857,13 @@ export abstract class IrohDurableObject<Env = unknown> extends DurableObject<Env
       } catch (e) {
         failed++;
         const trap = noteTrap(e);
-        if (this.#epoch === epoch) this.#retry(key, dueMs);
+        const delay = this.#epoch === epoch ? this.#retry(key, dueMs) : null;
         log(trap ? "error" : "warn", "alarm_failed", {
           endpoint: this.#id,
           due: kind,
           error: String(e),
           trap,
-          retry_in_s: RETRY_MS / 1000,
+          retry_in_s: delay === null ? null : delay / 1000,
         });
         // The node belongs to a trapped instance: the rest waits for the next alarm, which
         // the rearm in `alarm` sets at once since the rows are due.
@@ -832,11 +877,30 @@ export abstract class IrohDurableObject<Env = unknown> extends DurableObject<Env
   /** Deletes `key` if it still has the due time it ran for, not one its work set again. */
   #complete(key: string, dueMs: number): void {
     this.#sql("DELETE FROM iroh_schedule WHERE key = ? AND due_ms = ?", key, dueMs);
+    this.#put(ATTEMPTS + key, null);
   }
 
-  /** Moves `key` on by the retry delay, unless its work scheduled it again itself. */
-  #retry(key: string, dueMs: number): void {
-    this.#sql("UPDATE iroh_schedule SET due_ms = ? WHERE key = ? AND due_ms = ?", Date.now() + RETRY_MS, key, dueMs);
+  /** Failed runs of the current schedule of `key`. */
+  #attempts(key: string): number {
+    return num(this.#get(ATTEMPTS + key)) ?? 0;
+  }
+
+  /**
+   * Moves `key` on by the retry delay, 30 s doubling per failed run up to an hour, unless its
+   * work scheduled it again itself. Returns the delay, or null if the row moved.
+   */
+  #retry(key: string, dueMs: number): number | null {
+    const failures = this.#attempts(key) + 1;
+    const delay = Math.min(RETRY_MS * 2 ** Math.min(failures - 1, 20), RETRY_MAX_MS);
+    const moved = this.#sql(
+      "UPDATE iroh_schedule SET due_ms = ? WHERE key = ? AND due_ms = ? RETURNING key",
+      Date.now() + delay,
+      key,
+      dueMs,
+    ).toArray();
+    if (moved.length === 0) return null;
+    this.#put(ATTEMPTS + key, failures);
+    return delay;
   }
 
   /**
@@ -852,7 +916,11 @@ export abstract class IrohDurableObject<Env = unknown> extends DurableObject<Env
     let status = "ok";
     try {
       const rec = pkarrRecord(ident.secret, ident.relayUrl, ident.pkarrRelay);
-      const put = await fetch(rec.url, { method: "PUT", body: rec.body, signal: AbortSignal.timeout(PKARR_TIMEOUT_MS) });
+      const put = await fetch(rec.url, {
+        method: "PUT",
+        body: rec.body,
+        signal: AbortSignal.timeout(PKARR_TIMEOUT_MS),
+      });
       await put.body?.cancel();
       if (!put.ok) {
         status = `put status ${put.status}`;
@@ -931,7 +999,14 @@ export abstract class IrohDurableObject<Env = unknown> extends DurableObject<Env
         this.#loaded = false;
         try {
           this.#enter();
+          this.onMinted();
         } catch (e) {
+          // Undo in memory what the rolled-back transaction undoes in storage.
+          if (this.#node) {
+            this.#node.detach();
+            this.#lose("destroy");
+          }
+          this.#id = null;
           this.#tables = null;
           this.#loaded = false;
           throw e;

@@ -1,8 +1,8 @@
 // Pure functions of the registry and the list page, and the registry object's checks.
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { newId } from "./ids.js";
 import { htmlEscape, labelError, listPage, mintBody, REGISTRY_NAME, utc } from "../../src/registry.js";
+import { newId } from "./ids.js";
 
 const ID = "ybndrfg8ejkmcpqxot1uwisza345h769ybndrfg8ejkmcpqxot1u";
 
