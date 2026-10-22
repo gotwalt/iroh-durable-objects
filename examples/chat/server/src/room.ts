@@ -53,10 +53,22 @@ export interface RoomStats {
 
 /** Event lines waiting for one recipient. */
 interface Outbox {
+  /** At most OUTBOX_MAX_LINES. */
   readonly lines: string[];
+  /** Lines dropped from the front since the last batch was taken. */
+  dropped: number;
   /** The batch timer, until it fires. */
   timer: ReturnType<typeof setTimeout> | undefined;
 }
+
+/**
+ * The most event lines queued for one member. Lines queue while the member's previous batch
+ * is being written, which a member that stops reading holds up until the connection's
+ * t_silent (60 s) closes it. Past the limit the oldest line is dropped: the first line
+ * delivered then has a `prev` the member has not seen, and one `/since` (at most
+ * LIMITS.sinceMax events) fetches what it missed.
+ */
+const OUTBOX_MAX_LINES = LIMITS.sinceMax;
 
 type Via = "open" | "dial" | "none";
 
@@ -337,9 +349,13 @@ export class Room {
     const pending = this.#outboxes.get(recipient);
     if (pending !== undefined) {
       pending.lines.push(line);
+      if (pending.lines.length > OUTBOX_MAX_LINES) {
+        pending.lines.shift();
+        pending.dropped++;
+      }
       return;
     }
-    const outbox: Outbox = { lines: [line], timer: undefined };
+    const outbox: Outbox = { lines: [line], dropped: 0, timer: undefined };
     outbox.timer = setTimeout(() => {
       outbox.timer = undefined;
       background(this.#flush(recipient, outbox), this.#log, "room delivery");
@@ -365,9 +381,11 @@ export class Room {
     try {
       while (this.#outboxes.get(recipient) === outbox && outbox.lines.length > 0) {
         const lines = outbox.lines.splice(0);
+        const dropped = outbox.dropped;
+        outbox.dropped = 0;
         const started = Date.now();
         const { ok, via } = await this.#deliver(recipient, lines.join(""));
-        const fields = { peer: recipient, events: lines.length, via, ok, ms: Date.now() - started };
+        const fields = { peer: recipient, events: lines.length, dropped, via, ok, ms: Date.now() - started };
         if (ok) {
           this.stats.deliveriesOk++;
           this.#log.info("room_delivery", fields);

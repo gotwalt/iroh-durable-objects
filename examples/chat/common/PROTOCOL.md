@@ -357,6 +357,11 @@ the dial-back.
 
 - Delivery of room events. A delivery is best effort, once. Members rely on
   `prev` and `/since`.
+- That every event is queued for a member. While a delivery to a member is being
+  written, a member that does not read can hold it up until `t_silent`, and an
+  object may bound what it queues for that member meanwhile by dropping the oldest
+  lines. The TypeScript server keeps at most `SINCE_MAX` = 500, so one `/since`
+  fetches what was dropped.
 - The grouping of delivered lines into streams, and the order of a delivery
   relative to the reply of the request that caused it (they travel on different
   streams and connections).

@@ -596,6 +596,9 @@ rewritten class:
   so on where the Rust app writes `\u000a`. PROTOCOL.md allows both.
 - When the notify stream fails, the dial-back closes the connection at once instead of
   waiting up to 5 s for the peer to close it.
+- At most 500 event lines queue for one member while its previous batch is being written;
+  past that the oldest are dropped, and `room_delivery` reports them as `dropped`. The Rust
+  app's queue has no bound.
 - Log targets are `chat`, `chat.room`, `chat.ctl`, `chat.echo` and `chat.notify`, not the
   Rust module paths. Debug-level `tracing` lines of the Rust app, such as "delivery
   stream: …", have no counterpart; they are below the default `LOG_LEVEL`.
