@@ -36,7 +36,7 @@ function adminAuth(req: Request, expected: string | undefined, path: string): Re
     return new Response("admin disabled", { status: 503 });
   }
   const m = /^bearer\s+(.+)$/i.exec(req.headers.get("authorization")?.trim() ?? "");
-  const a = new TextEncoder().encode(m?.[1].trim() ?? "");
+  const a = new TextEncoder().encode(m?.[1]?.trim() ?? "");
   const b = new TextEncoder().encode(expected);
   const ok = a.length === b.length && crypto.subtle.timingSafeEqual(a, b);
   log(ok ? "info" : "warn", "admin_auth", { ok, path });
@@ -174,11 +174,11 @@ export function irohRouter(opts: RouterOptions) {
       if (multi && req.method === "GET" && url.pathname === "/endpoints.json") {
         return Response.json(await registry().list());
       }
-      const destroy = /^\/endpoints\/([^/]+)$/.exec(url.pathname);
-      if (destroy && req.method === "DELETE" && parseEndpointLabel(destroy[1])) {
+      const destroy = /^\/endpoints\/([^/]+)$/.exec(url.pathname)?.[1];
+      if (destroy !== undefined && req.method === "DELETE" && parseEndpointLabel(destroy)) {
         const denied = adminAuth(req, env.ADMIN_TOKEN, "/endpoints");
         if (denied) return denied;
-        const id = destroy[1];
+        const id = destroy;
         const c = await classes.resolve(id);
         if (!c) return new Response("not found", { status: 404 });
         const res = await c.ns.get(c.ns.idFromName(id)).destroy();
@@ -195,10 +195,10 @@ export function irohRouter(opts: RouterOptions) {
         if (!removed && res) return new Response("destroyed; registry update failed, retry", { status: 502 });
         return res ? Response.json(res) : new Response("not found", { status: 404 });
       }
-      const status = /^\/status\/([^/]+)$/.exec(url.pathname);
-      if (status && req.method === "GET" && parseEndpointLabel(status[1])) {
-        const c = await classes.resolve(status[1]);
-        const s = c ? await c.ns.get(c.ns.idFromName(status[1])).status() : null;
+      const status = /^\/status\/([^/]+)$/.exec(url.pathname)?.[1];
+      if (status !== undefined && req.method === "GET" && parseEndpointLabel(status)) {
+        const c = await classes.resolve(status);
+        const s = c ? await c.ns.get(c.ns.idFromName(status)).status() : null;
         return s ? Response.json(s) : new Response("not found", { status: 404 });
       }
       if (multi && (url.pathname === "/" || url.pathname === "/endpoints.json")) {

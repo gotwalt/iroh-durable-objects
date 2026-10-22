@@ -352,7 +352,7 @@ export abstract class IrohDurableObject<Env = unknown> extends DurableObject<Env
       endpointBuilds: Number(this.#get("endpoint_builds") ?? 0),
       bundle: String(this.#vars.BUNDLE_SHA256 ?? ""),
       relayUrl: ident.relayUrl,
-      protocols: Object.entries(this.#handlers).map(([alpn, h]) => ({ alpn, idleMs: h.idleMs })),
+      protocols: Object.entries(this.#handlers).map(([alpn, h]) => (h.idleMs === undefined ? { alpn } : { alpn, idleMs: h.idleMs })),
       ...this.timings(),
     }, host);
     this.#endpoint = this.#node.endpoint();
@@ -360,16 +360,17 @@ export abstract class IrohDurableObject<Env = unknown> extends DurableObject<Env
     if (ident.pkarrRelay && this.#sql("SELECT 1 FROM iroh_schedule WHERE key = ?", REPUBLISH).toArray().length === 0) {
       this.#schedule(REPUBLISH, Date.now() + RETRY_BASE_MS);
     }
-    const sockets = this.ctx.getWebSockets();
-    const sids = sockets.map((ws) => (ws.deserializeAttachment() as Attachment | null)?.sid ?? this.#sidOf(ws) ?? "");
-    sockets.forEach((ws, i) => this.#sockets.set(sids[i], ws));
-    let closed = 0;
-    sockets.forEach((ws, i) => {
+    const sockets = this.ctx.getWebSockets().map((ws) => {
       const att = ws.deserializeAttachment() as Attachment | null;
-      const res = this.#node!.restore(sids[i], att?.v === 1 ? att.s : undefined, Date.now());
-      closed += res.close.length;
-      this.#apply(res, ws, sids[i]);
+      return { ws, att, sid: att?.sid ?? this.#sidOf(ws) ?? "" };
     });
+    for (const { ws, sid } of sockets) this.#sockets.set(sid, ws);
+    let closed = 0;
+    for (const { ws, att, sid } of sockets) {
+      const res = this.#node.restore(sid, att?.v === 1 ? att.s : undefined, Date.now());
+      closed += res.close.length;
+      this.#apply(res, ws, sid);
+    }
     log("info", "wake", {
       endpoint: ident.id,
       wakes,
@@ -429,7 +430,7 @@ export abstract class IrohDurableObject<Env = unknown> extends DurableObject<Env
       const url = new URL(req.url);
       const r = node.upgrade(req.method, url.pathname, req.headers.get("sec-websocket-protocol") ?? undefined, Date.now());
       if (!r.ok) return new Response(r.message, { status: r.status });
-      const [client, server] = Object.values(new WebSocketPair());
+      const { 0: client, 1: server } = new WebSocketPair();
       this.ctx.acceptWebSocket(server, ["relay", `sid:${r.sid}`]);
       server.serializeAttachment({ v: 1, sid: r.sid, s: r.snapshot } satisfies Attachment);
       this.#sockets.set(r.sid, server);
