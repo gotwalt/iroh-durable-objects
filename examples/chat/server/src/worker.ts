@@ -12,4 +12,4 @@ export { Chat } from "./chat";
 export type EnvProvidesChatEnv = Env extends ChatEnv ? true : never;
 true satisfies EnvProvidesChatEnv;
 
-export default { fetch: irohRouter({ binding: "CHAT" }) } satisfies ExportedHandler<Env>;
+export default irohRouter({ binding: "CHAT" });

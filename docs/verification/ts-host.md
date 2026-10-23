@@ -396,7 +396,7 @@ object with a connection open, which needs observation over days.
 
   | File | Lines | Holds |
   |---|---|---|
-  | `src/chat.ts` | 126 | `class Chat extends IrohDurableObject`: builds storage and the protocols once per construction, creates the schema in the constructor, maps ALPNs to handlers, runs the alarm work, adds the status fields |
+  | `src/chat.ts` | 126 | `class Chat extends IrohDurableObject`: builds storage and the protocols once per construction, creates the schema in `protocols()`, drops kept connections when `nodeSignal` aborts, maps ALPNs to handlers, runs the alarm work, adds the status fields |
   | `src/protocol.ts` | 330 | the wire format without I/O: ALPNs and limits, request framing and grammar, number and white-space rules, nick rules, the room and ctl lines as discriminated unions, encoding with `JSON.stringify` |
   | `src/room.ts` | 369 | `iroh-do/room/1`: request handling, the rate limit, deliveries and the connections kept for reuse |
   | `src/ctl.ts`, `src/lines.ts` | 143, 43 | `iroh-do/ctl/1` and its line framing |

@@ -73,9 +73,19 @@ interface Handled {
  */
 const REQUEST_FAILED = 1n;
 
+export interface RoomOptions {
+  storage: ChatStorage;
+  /** The object's endpoint; called only once the node is built, from handlers and deliveries. */
+  endpoint(): Endpoint;
+  /** The object's endpoint id, z-base-32: the room's id. */
+  endpointId(): string;
+  log: Logger;
+}
+
 export class Room {
   readonly #storage: ChatStorage;
   readonly #endpoint: () => Endpoint;
+  readonly #endpointId: () => string;
   readonly #log: Logger;
   readonly #limiter = new RateLimiter(LIMITS.rateLimitRequests, LIMITS.rateLimitWindowMs);
   /** Open room connections by peer, whichever side dialed; the newest wins. */
@@ -83,16 +93,16 @@ export class Room {
   /** Pending deliveries by recipient. An entry exists while its delivery runs. */
   readonly #outboxes = new Map<string, Outbox>();
 
-  /** `endpoint` is called only once the node is built, from handlers and deliveries. */
-  constructor(storage: ChatStorage, endpoint: () => Endpoint, log: Logger) {
-    this.#storage = storage;
-    this.#endpoint = endpoint;
-    this.#log = log;
+  constructor(options: RoomOptions) {
+    this.#storage = options.storage;
+    this.#endpoint = () => options.endpoint();
+    this.#endpointId = () => options.endpointId();
+    this.#log = options.log;
   }
 
   /**
-   * Drops the connections of a node that no longer exists. The object builds a new node after
-   * a wake or a wasm reset, and the connections of the old one are gone with it.
+   * Drops the connections of a node that no longer exists: the object calls it when its node
+   * is lost (`nodeSignal`), since the connections of the old node are stale.
    */
   forgetConnections(): void {
     this.#connections.clear();
@@ -243,7 +253,7 @@ export class Room {
 
   #joinReply(peer: string, nick: string): RoomLine[] {
     const history: RoomLine[] = this.#storage.recentEvents(LIMITS.historyDefault).map(historyOf);
-    const room = this.#endpoint().id().toZ32();
+    const room = this.#endpointId();
     return [...history, { t: "ready", room, you: { peer, nick }, last_seq: this.#storage.roomSeq() }];
   }
 
@@ -402,7 +412,7 @@ export class Room {
     if (conn === undefined) return undefined;
     let closed: boolean;
     try {
-      closed = conn.closeReason() !== undefined;
+      closed = conn.closeReason() !== null;
     } catch (error) {
       // A connection of a wasm instance that was replaced throws on every call.
       rethrowTrap(error);

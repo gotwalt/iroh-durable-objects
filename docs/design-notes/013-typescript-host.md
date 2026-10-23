@@ -238,7 +238,7 @@ connection is dropped rather than left stalled.
     (argument trimming, integer parsing) were restated so that both servers
     follow one plain rule (PROTOCOL.md, "Changes"). The class builds its
     storage and protocol handlers once per construction and creates its
-    tables in the constructor. It schedules dial-backs and the log prune
+    tables in `protocols()`, inside the node build of a minted object. It schedules dial-backs and the log prune
     through `schedule` and `onAlarm`, and adds `records`, `members` and
     `present` to the status through `appStatus`, the base class's equivalents
     of `Ctx::schedule`, `App::on_alarm` and `App::status`. The Rust app stays

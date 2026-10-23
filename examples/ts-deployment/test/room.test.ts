@@ -120,10 +120,7 @@ describe("chat room across a forced hibernation", () => {
     expect(d1.failed).toBe(before.failed);
   });
 
-  // Expected to fail until examples/chat/server tests `closeReason() === null` (iroh-do now
-  // returns null for an open connection, as @number0/iroh does; it returned undefined): the
-  // room then never sees its dialed connections as open. Remove `.fails` with that change.
-  it.fails("the next deliveries, within t_idle, reuse the dialed connections", async () => {
+  it("the next deliveries, within t_idle, reuse the dialed connections", async () => {
     const text2 = "second line, within t_idle";
     const cy2 = member("cy", ["--say", text2]);
     await cy2.take((l) => json(l)?.t === "msg", 60_000);

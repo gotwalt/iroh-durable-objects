@@ -1,7 +1,7 @@
 // The chat object: an iroh endpoint that serves a chat room (`iroh-do/room/1`) and the
 // diagnostic protocols `iroh-do/ctl/1` and `iroh-do/echo/1`, and dials peers back with
 // `iroh-do/notify/1`. examples/chat/common/PROTOCOL.md specifies all four.
-import { IrohDurableObject, type Protocols, type Timings } from "iroh-do";
+import { IrohDurableObject, NotMintedError, type Protocols, type Timings } from "iroh-do";
 import { Ctl } from "./ctl";
 import { serveEcho } from "./echo";
 import { rethrowTrap } from "./errors";
@@ -33,23 +33,22 @@ export class Chat extends IrohDurableObject<ChatEnv> {
   readonly #dialBack: DialBack;
   readonly #log = logger("chat", () => this.#logEndpoint());
   readonly #echoLog = logger("chat.echo", () => this.#logEndpoint());
-  #id: string | undefined;
 
   constructor(ctx: DurableObjectState, env: ChatEnv) {
     super(ctx, env);
     this.#storage = new ChatStorage(ctx.storage, (dueMs) => this.#schedulePrune(dueMs));
-    // `sql.exec` is synchronous, so the tables exist before the object handles its first
-    // event; `blockConcurrencyWhile` is needed only for asynchronous setup. The router reaches
-    // this class only for endpoints the registry lists as `chat`, so only objects that are
-    // minted, or about to be, create them. The exception is a destroyed endpoint reached
-    // through another isolate's stale registry cache, which gets empty tables again.
-    this.#storage.createSchema();
     const logEndpoint = () => this.#logEndpoint();
-    this.#room = new Room(this.#storage, () => this.endpoint, logger("chat.room", logEndpoint));
+    const endpointId = () => this.endpointId;
+    this.#room = new Room({
+      storage: this.#storage,
+      endpoint: () => this.endpoint,
+      endpointId,
+      log: logger("chat.room", logEndpoint),
+    });
     this.#ctl = new Ctl({
       storage: this.#storage,
       log: logger("chat.ctl", logEndpoint),
-      endpointId: () => this.#endpointId(),
+      endpointId,
       status: () => this.endpointStatus(),
       scheduleDialBack: (peer, delayMs) => this.schedule(DIAL_BACK_KEY + peer, delayMs),
     });
@@ -57,13 +56,21 @@ export class Chat extends IrohDurableObject<ChatEnv> {
       storage: this.#storage,
       log: logger("chat.notify", logEndpoint),
       endpoint: () => this.endpoint,
-      wakes: () => this.#wakes(),
+      endpointId,
+      wakes: () => this.endpointStatus().wakes,
     });
   }
 
-  /** Called on every node build: after a wake, and after a wasm reset. */
+  /**
+   * Called on every node build, in a minted object only (at mint, after a wake, after a wasm
+   * reset), inside the build's transaction. The tables are created here, so that an object
+   * that is not minted, such as a destroyed endpoint reached through a stale registry cache,
+   * writes none.
+   */
   protocols(): Protocols {
-    this.#room.forgetConnections();
+    this.#storage.createSchema();
+    // The connections the room keeps belong to this node and are stale once it is lost.
+    this.nodeSignal.addEventListener("abort", () => this.#room.forgetConnections(), { once: true });
     return {
       [ROOM_ALPN]: { accept: (conn) => this.#room.serve(conn) },
       [CTL_ALPN]: { accept: (conn) => this.#ctl.serve(conn) },
@@ -77,8 +84,9 @@ export class Chat extends IrohDurableObject<ChatEnv> {
       if (due !== null) this.#schedulePrune(due);
     } else if (key.startsWith(DIAL_BACK_KEY)) {
       // Awaited until the line is written, so that the alarm event covers the dial and the
-      // base class sees a wasm trap in it. The wait for the peer's close, at most 5 s, runs on
-      // after the event. A failed dial-back is recorded, not retried.
+      // base class sees a wasm trap in it, and runs the dial-back again. The wait for the
+      // peer's close, at most 5 s, runs on after the event. A failed dial or write is
+      // recorded, not retried.
       await this.#dialBack.run(key.slice(DIAL_BACK_KEY.length));
     } else {
       this.#log.warn("bad_schedule_key", { key });
@@ -98,12 +106,6 @@ export class Chat extends IrohDurableObject<ChatEnv> {
     return timings;
   }
 
-  /** The endpoint id, z-base-32. Builds the node if needed; throws before mint. */
-  #endpointId(): string {
-    this.#id ??= this.endpoint.id().toZ32();
-    return this.#id;
-  }
-
   /**
    * Arms the prune alarm for `dueMs`. Runs after an append has committed, so a failure is
    * logged, not thrown: the append stands, and the next append after `dueMs` arms the alarm
@@ -118,22 +120,14 @@ export class Chat extends IrohDurableObject<ChatEnv> {
     }
   }
 
-  /** The endpoint id for a log line, or undefined before mint; reads wasm once per object. */
+  /** The endpoint id for a log line, or undefined before mint. */
   #logEndpoint(): string | undefined {
-    if (this.#id !== undefined) return this.#id;
     try {
-      return this.#endpointId();
+      return this.endpointId;
     } catch (error) {
-      // `this.endpoint` throws until the object is minted.
-      rethrowTrap(error);
-      return undefined;
+      if (error instanceof NotMintedError) return undefined;
+      throw error;
     }
-  }
-
-  #wakes(): number {
-    const { wakes } = this.endpointStatus();
-    if (typeof wakes !== "number") throw new TypeError(`status: wakes is ${typeof wakes}`);
-    return wakes;
   }
 }
 

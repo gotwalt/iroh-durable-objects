@@ -16,6 +16,8 @@ export interface DialBackOptions {
   log: Logger;
   /** Called only once the node is built, from the alarm. */
   endpoint(): Endpoint;
+  /** The object's endpoint id, z-base-32. */
+  endpointId(): string;
   /** The object's wake count, for the notify line. */
   wakes(): number;
 }
@@ -47,7 +49,7 @@ export class DialBack {
     }
     try {
       const { storage } = this.#options;
-      const line = notifyLine(this.#options.endpoint().id().toZ32(), this.#options.wakes(), storage.totalRecords());
+      const line = notifyLine(this.#options.endpointId(), this.#options.wakes(), storage.totalRecords());
       const stream = await conn.openUni();
       await stream.writeAll(encodeUtf8(line));
       await stream.finish();
