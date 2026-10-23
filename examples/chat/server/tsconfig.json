@@ -1,8 +1,0 @@
-{
-  "extends": "../../../tsconfig.base.json",
-  "compilerOptions": {
-    "noEmit": true,
-    "types": ["./worker-configuration.d.ts"]
-  },
-  "include": ["src/**/*.ts", "test/*.test.ts", "worker-configuration.d.ts"]
-}
