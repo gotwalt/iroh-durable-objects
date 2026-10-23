@@ -44,6 +44,9 @@ that reviews refer to; `docs/design-notes/` records every change to it.
   - `cargo test -p iroh-do-harness`: the full node in a tokio host against
     stock peers; `tests/library.rs` covers the app API with the echo app.
   - `node tests/workerd/evict-test.mjs`: forced eviction in Miniflare.
+  - `node tests/workerd/fault-test.mjs`: mint and alarm failures, and the
+    eviction marker, in Miniflare. Build its bundle first with
+    `deploy/build-worker.sh tests/workerd/fault-worker "$PWD/build/fault-worker"`.
   - `LOCAL_PORT=8799 just local`: the scripted session on workerd. Port 8787
     is taken by another program on the maintainer's machine.
   - `FIXTURE_TARGET=<port> FIXTURE_ADMIN_TOKEN=<token> cargo test -p

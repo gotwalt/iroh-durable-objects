@@ -39,7 +39,8 @@ use tracing_subscriber::{
 /// `info`. `iroh_relay_ingress=info` keeps the socket table's events (`ingress_auth`,
 /// `socket_close`, `dst_violation`). `netwatch` warns on every endpoint bind in workerd, where
 /// `navigator.onLine` does not exist.
-pub const DEFAULT_LOG_LEVEL: &str = "info,iroh=warn,noq=warn,netwatch=error,iroh_do=info,iroh_relay_ingress=info";
+pub const DEFAULT_LOG_LEVEL: &str =
+    "info,iroh=warn,noq=warn,netwatch=error,iroh_do=info,iroh_relay_ingress=info";
 
 /// Writes one serialized event. Receives the event's level and its JSON text.
 pub type Write = fn(Level, &str);
