@@ -25,7 +25,7 @@ function setUp(state: DurableObjectState) {
   const { storage } = chatStorage(state);
   const endpoint = new FakeEndpoint(E);
   const log = testLogger();
-  const room = new Room(storage, () => asEndpoint(endpoint), log);
+  const room = new Room({ storage, endpoint: () => asEndpoint(endpoint), endpointId: () => E, log });
   const conns: FakeConnection[] = [];
   const serving: Promise<void>[] = [];
   return {
@@ -103,9 +103,7 @@ describe("requests", () => {
       const [ana] = await joined(t, "ana");
       if (ana === undefined) throw new Error("no member");
       for (let i = 0; i < 12; i++) {
-        expect(await t.ask(ana, "x".repeat(LIMITS.maxRequest + 1))).toEqual([
-          { t: "err", text: ROOM_ERRORS.tooLong },
-        ]);
+        expect(await t.ask(ana, "x".repeat(LIMITS.maxRequest + 1))).toEqual([{ t: "err", text: ROOM_ERRORS.tooLong }]);
       }
       // The join was the first request of the window.
       for (let i = 0; i < LIMITS.rateLimitRequests - 1; i++) {
@@ -165,7 +163,15 @@ describe("deliveries", () => {
       const [ana, bo, cy] = await joined(t, "ana", "bo", "cy");
       if (ana === undefined || bo === undefined || cy === undefined) throw new Error("no member");
       const [ok] = await t.ask(bo, "/say hi");
-      const event = { t: "msg", seq: ok?.seq, prev: ok?.prev, ts: expect.any(Number), peer: "bo", nick: "bo", text: "hi" };
+      const event = {
+        t: "msg",
+        seq: ok?.seq,
+        prev: ok?.prev,
+        ts: expect.any(Number),
+        peer: "bo",
+        nick: "bo",
+        text: "hi",
+      };
       expect(await delivered(ana)).toEqual([event]);
       expect(await delivered(cy)).toEqual([event]);
       expect(await delivered(bo)).toEqual([]);
@@ -273,10 +279,8 @@ describe("deliveries", () => {
       const t = setUp(state);
       const [ana] = await joined(t, "ana");
       if (ana === undefined) throw new Error("no member");
-      let release = () => {};
-      ana.stallUnis = new Promise<void>((resolve) => {
-        release = resolve;
-      });
+      const release: (() => void)[] = [];
+      ana.stallUnis = new Promise<void>((resolve) => release.push(resolve));
       // The first delivery to ana starts and does not finish.
       await t.ask(t.dial("first"), "/join first");
       await eventually(() => ana.unis.length === 1);
@@ -289,7 +293,7 @@ describe("deliveries", () => {
         await t.ask(conn, `/join ${peer}`);
         await Promise.all(Array.from({ length: LIMITS.rateLimitRequests - 1 }, () => t.ask(conn, "/say x")));
       }
-      release();
+      for (const resolve of release) resolve();
       await eventually(() => ana.unis.length === 2 && ana.unis[1]?.state === "finished");
       const [first, second] = await Promise.all(ana.unis.map(async (u) => parse(await u.text())));
       expect(second).toHaveLength(LIMITS.sinceMax);

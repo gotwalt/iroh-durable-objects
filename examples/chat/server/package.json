@@ -12,9 +12,13 @@
   },
   "scripts": {
     "types": "wrangler types",
-    "check": "npm run types && tsc --noEmit",
+    "check": "npm run types && tsc -p tsconfig.json && tsc -p tsconfig.workers.json && tsc -p tsconfig.node.json",
     "lint": "biome check .",
     "format": "biome check --write .",
-    "test": "vitest run"
+    "test": "npm run check && vitest run",
+    "test:fixtures": "node test/fixtures.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1"
   }
 }

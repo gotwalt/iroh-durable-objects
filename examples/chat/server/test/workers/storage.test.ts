@@ -95,7 +95,9 @@ describe("retention", () => {
           .map((row) => String(row.detail))
           .join("; ");
       const kinds = "('msg', 'act', 'join', 'part', 'nick')";
-      expect(plan(`SELECT seq FROM log WHERE kind IN ${kinds} ORDER BY seq DESC LIMIT 50`)).toMatch(/USING INDEX log_room\b/);
+      expect(plan(`SELECT seq FROM log WHERE kind IN ${kinds} ORDER BY seq DESC LIMIT 50`)).toMatch(
+        /USING INDEX log_room\b/,
+      );
       expect(plan(`SELECT seq FROM log WHERE seq > 5 AND kind IN ${kinds} ORDER BY seq LIMIT 500`)).toMatch(
         /USING INDEX log_room\b/,
       );
@@ -169,7 +171,9 @@ describe("members", () => {
     inObject((state) => {
       const { storage } = chatStorage(state);
       storage.append(rec("msg"), T0);
-      state.storage.sql.exec("CREATE TRIGGER refuse BEFORE INSERT ON members BEGIN SELECT RAISE(ABORT, 'refused'); END");
+      state.storage.sql.exec(
+        "CREATE TRIGGER refuse BEFORE INSERT ON members BEGIN SELECT RAISE(ABORT, 'refused'); END",
+      );
       expect(() =>
         storage.putMemberAndAppend({ peer: "bo", nick: "bo", joined: true }, { ...rec("join", ""), peer: "bo" }, T0),
       ).toThrow(StorageError);

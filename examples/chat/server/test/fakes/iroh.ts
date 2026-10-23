@@ -158,7 +158,7 @@ export class FakeConnection {
   /** Unidirectional streams the object opened, oldest first, read or not. */
   readonly unis: Pipe[] = [];
   #unisTaken = 0;
-  #closeReason: string | undefined;
+  #closeReason: string | null = null;
   /** When set, `openUni` rejects with it: a connection that fails to open streams. */
   openUniError: Error | undefined;
   /** When set, writes on the unidirectional streams the object opens wait for it. */
@@ -178,13 +178,13 @@ export class FakeConnection {
     return this.#changes.until(() => {
       const next = this.#incoming.shift();
       if (next !== undefined) return next;
-      if (this.#closeReason !== undefined) throw new Error(`connection lost: ${this.#closeReason}`);
+      if (this.#closeReason !== null) throw new Error(`connection lost: ${this.#closeReason}`);
       return undefined;
     });
   }
 
   async openUni(): Promise<Pipe> {
-    if (this.#closeReason !== undefined) throw new Error(`connection lost: ${this.#closeReason}`);
+    if (this.#closeReason !== null) throw new Error(`connection lost: ${this.#closeReason}`);
     if (this.openUniError !== undefined) throw this.openUniError;
     const pipe = this.#pipe();
     pipe.stall = this.stallUnis;
@@ -193,7 +193,7 @@ export class FakeConnection {
     return pipe;
   }
 
-  closeReason(): string | undefined {
+  closeReason(): string | null {
     return this.#closeReason;
   }
 
@@ -202,7 +202,7 @@ export class FakeConnection {
   }
 
   async closed(): Promise<string> {
-    return this.#changes.until(() => this.#closeReason);
+    return this.#changes.until(() => this.#closeReason ?? undefined);
   }
 
   // ---- The member's side ----
@@ -217,7 +217,7 @@ export class FakeConnection {
 
   /** Opens a bidirectional stream: the member writes `send` and reads `recv`. */
   openBi(): BiPipes {
-    if (this.#closeReason !== undefined) throw new Error("connection closed");
+    if (this.#closeReason !== null) throw new Error("connection closed");
     const toObject = this.#pipe();
     const toMember = this.#pipe();
     this.#incoming.push({ send: toMember, recv: toObject });
@@ -243,7 +243,7 @@ export class FakeConnection {
   }
 
   #close(reason: string): void {
-    if (this.#closeReason !== undefined) return;
+    if (this.#closeReason !== null) return;
     this.#closeReason = reason;
     for (const pipe of this.#pipes) pipe.fail(new Error(`connection lost: ${reason}`));
     this.#changes.notify();
@@ -260,6 +260,8 @@ export class FakeEndpoint {
   readonly dials: { peer: string; alpn: string; conn: FakeConnection | undefined }[] = [];
   /** When set, `peers` throws it. */
   peersError: Error | undefined;
+  /** Called with each connection the object dials, before `connect` resolves with it. */
+  onDial: ((conn: FakeConnection) => void) | undefined;
 
   constructor(id: string) {
     this.#id = id;
@@ -282,6 +284,7 @@ export class FakeEndpoint {
       throw new Error(`no relay socket for ${z32}`);
     }
     const conn = new FakeConnection(z32);
+    this.onDial?.(conn);
     this.dials.push({ peer: z32, alpn, conn });
     this.#changes.notify();
     return conn;
