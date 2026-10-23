@@ -40,8 +40,8 @@ pub use iroh_do_core::{
     Stats, Value,
 };
 use iroh_relay_ingress::{
-    DatagramBatch, Ecn, IngressConfig, IngressSession, Output, SessionSnapshot, Status,
-    UpgradeRequest, encode_datagrams,
+    DatagramBatch, Effect, IngressConfig, IngressSession, SessionSnapshot, Sockets, UpgradeRequest,
+    encode_datagrams,
 };
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -197,11 +197,20 @@ struct Work {
     attempt: u32,
 }
 
+/// An upgrade the object accepted, before the WebSocket is.
+struct Accepted {
+    sid: u64,
+    protocol: &'static str,
+    challenge: Vec<u8>,
+    effects: Vec<Effect<u64>>,
+}
+
 /// In-memory object state, dropped on hibernation and eviction.
 struct Live {
     node: Node,
     host: Arc<HostImpl>,
-    sessions: HashMap<u64, IngressSession>,
+    /// The ingress sessions of the sockets, restored from their attachments.
+    table: Sockets<u64>,
 }
 
 /// One simulated Durable Object.
@@ -365,144 +374,122 @@ impl DoObject {
             config.t_linger = self.timings.t_linger;
             config.max_idle_timeout = self.timings.max_idle_timeout;
             let node = Node::new(config, host.clone(), &self.app);
-            let cfg = IngressConfig::new(self.id);
-            let mut sessions = HashMap::new();
-            for (sid, socket) in lock(&self.sockets).iter() {
-                let Some(snap) = socket.attachment.clone() else {
-                    continue;
-                };
-                let session = IngressSession::restore(snap, &cfg);
-                if let Some(peer) = session.peer() {
-                    lock(&host.routes).insert(peer, (*sid, socket.tx.clone()));
-                    node.socket_authenticated(peer);
-                }
-                sessions.insert(*sid, session);
-            }
-            info!(id = %self.id.fmt_short(), wakes, restored = sessions.len(), "constructor");
-            Live {
+            let mut l = Live {
                 node,
                 host,
-                sessions,
+                table: Sockets::new(IngressConfig::new(self.id)),
+            };
+            let attachments: Vec<(u64, Option<SessionSnapshot>)> = lock(&self.sockets)
+                .iter()
+                .map(|(sid, s)| (*sid, s.attachment.clone()))
+                .collect();
+            for (sid, snapshot) in attachments {
+                let effects = l.table.restore(sid, snapshot, now());
+                self.apply(&l, effects);
             }
+            info!(id = %self.id.fmt_short(), wakes, restored = l.table.len(), "constructor");
+            l
         })
     }
 
-    fn add_socket(&self, session: IngressSession, tx: mpsc::UnboundedSender<WsOut>) -> u64 {
+    /// Carries out the socket table's effects, as the Durable Object does. Handshake deadlines
+    /// are not enforced here.
+    fn apply(&self, l: &Live, effects: Vec<Effect<u64>>) {
+        let tx = |sid: &u64| lock(&self.sockets).get(sid).map(|s| s.tx.clone());
+        for effect in effects {
+            match effect {
+                Effect::Send(sid, frame) => {
+                    if let Some(tx) = tx(&sid) {
+                        let _ = tx.send(WsOut::Binary(frame.into_vec()));
+                    }
+                }
+                Effect::Persist(sid, snap) => {
+                    if let Some(s) = lock(&self.sockets).get_mut(&sid) {
+                        s.attachment = Some(snap);
+                    }
+                }
+                Effect::Close(sid, code, reason) => {
+                    debug!(sid, code, reason, "closing socket");
+                    if let Some(tx) = tx(&sid) {
+                        let _ = tx.send(WsOut::Close(code, reason));
+                    }
+                }
+                Effect::PeerUp(peer, sid) => {
+                    if let Some(tx) = tx(&sid) {
+                        lock(&l.host.routes).insert(peer, (sid, tx));
+                    }
+                    l.node.socket_authenticated(peer);
+                }
+                Effect::PeerDown(peer) => {
+                    lock(&l.host.routes).remove(&peer);
+                    l.node.socket_closed(peer);
+                }
+                Effect::Datagrams {
+                    from,
+                    ecn,
+                    segment_size,
+                    contents,
+                } => l.node.datagrams(
+                    from,
+                    ecn,
+                    Bytes::from(contents),
+                    segment_size.map(|s| usize::from(s.get())),
+                ),
+                Effect::Deadline(_) => {}
+            }
+        }
+    }
+
+    /// Answers an upgrade request for a new socket of this object: adds its session and
+    /// returns its id, the subprotocol to answer with and the challenge. The socket is
+    /// registered with [`DoObject::add_socket`] once accepted.
+    fn upgrade(&self, req: &UpgradeRequest<'_>) -> Result<Accepted, iroh_relay_ingress::Reject> {
         let sid = self.next_sid.fetch_add(1, Ordering::SeqCst);
+        let mut live = lock(&self.live);
+        let l = self.ensure_live(&mut live);
+        let up = l.table.upgrade(sid, req, &mut rand::rng(), now())?;
+        Ok(Accepted {
+            sid,
+            protocol: up.response.subprotocol_header().1,
+            challenge: up.response.challenge.into_vec(),
+            effects: up.effects,
+        })
+    }
+
+    /// Registers an accepted socket and carries out its upgrade's effects.
+    fn add_socket(&self, sid: u64, tx: mpsc::UnboundedSender<WsOut>, effects: Vec<Effect<u64>>) {
         let mut live = lock(&self.live);
         let l = self.ensure_live(&mut live);
         lock(&self.sockets).insert(
             sid,
             Socket {
                 tx,
-                attachment: session.snapshot(),
+                attachment: None,
             },
         );
-        l.sessions.insert(sid, session);
-        sid
+        self.apply(l, effects);
     }
 
     fn on_message(&self, sid: u64, data: &[u8]) {
         let mut live = lock(&self.live);
         let l = self.ensure_live(&mut live);
-        let Some(tx) = lock(&self.sockets).get(&sid).map(|s| s.tx.clone()) else {
-            return;
-        };
-        let Some(session) = l.sessions.get_mut(&sid) else {
-            return;
-        };
-        let violations = session.dst_violations();
-        let outputs = match session.on_message(data, now()) {
-            Ok(o) => o,
-            Err(close) => {
-                debug!(?close.reason, "closing socket");
-                if let Some(f) = &close.frame {
-                    let _ = tx.send(WsOut::Binary(f.as_bytes().to_vec()));
-                }
-                let _ = tx.send(WsOut::Close(close.code, close.reason_text()));
-                return;
-            }
-        };
-        let mut superseded = None;
-        let mut persist = session.dst_violations() != violations;
-        for out in outputs {
-            match out {
-                Output::Send(f) => {
-                    let _ = tx.send(WsOut::Binary(f.into_vec()));
-                }
-                Output::Authenticated { peer } => {
-                    // One route per peer: the newest socket wins and the previous one is
-                    // sent `SameEndpointIdConnected`.
-                    let previous = lock(&l.host.routes).insert(peer, (sid, tx.clone()));
-                    if let Some((old, _)) = previous
-                        && old != sid
-                    {
-                        superseded = Some(old);
-                    }
-                    l.node.socket_authenticated(peer);
-                    persist = true;
-                }
-                Output::Datagrams { from, batch } => {
-                    l.node.datagrams(
-                        from,
-                        Ecn::to_bits(batch.ecn),
-                        Bytes::copy_from_slice(batch.contents),
-                        batch.segment_size.map(|s| usize::from(s.get())),
-                    );
-                }
-            }
-        }
-        if persist && let Some(s) = lock(&self.sockets).get_mut(&sid) {
-            s.attachment = l.sessions.get(&sid).and_then(|s| s.snapshot());
-        }
-        if let Some(old) = superseded {
-            let frame = l
-                .sessions
-                .get(&old)
-                .and_then(|s| s.status_frame(Status::SameEndpointIdConnected));
-            if let (Some(frame), Some(s)) = (frame, lock(&self.sockets).get(&old)) {
-                let _ = s.tx.send(WsOut::Binary(frame.into_vec()));
-            }
-        }
+        let effects = l.table.message(&sid, data, now());
+        self.apply(l, effects);
     }
 
     fn on_text(&self, sid: u64) {
         let mut live = lock(&self.live);
         let l = self.ensure_live(&mut live);
-        if let (Some(session), Some(s)) = (l.sessions.get_mut(&sid), lock(&self.sockets).get(&sid))
-        {
-            let close = session.on_text_message();
-            let _ = s.tx.send(WsOut::Close(close.code, close.reason_text()));
-        }
+        let effects = l.table.text(&sid);
+        self.apply(l, effects);
     }
 
     fn on_close(&self, sid: u64) {
         let mut live = lock(&self.live);
         let l = self.ensure_live(&mut live);
         lock(&self.sockets).remove(&sid);
-        let Some(session) = l.sessions.remove(&sid) else {
-            return;
-        };
-        let Some(peer) = session.peer() else { return };
-        let mut routes = lock(&l.host.routes);
-        if routes.get(&peer).map(|(s, _)| *s) != Some(sid) {
-            return;
-        }
-        routes.remove(&peer);
-        // Route to another socket of the same peer, if any, as iroh's relay server does.
-        let other = l
-            .sessions
-            .iter()
-            .find(|(_, s)| s.peer() == Some(peer))
-            .map(|(sid, _)| *sid);
-        if let Some(other) = other
-            && let Some(s) = lock(&self.sockets).get(&other)
-        {
-            routes.insert(peer, (other, s.tx.clone()));
-            return;
-        }
-        drop(routes);
-        l.node.socket_closed(peer);
+        let effects = l.table.closed(&sid);
+        self.apply(l, effects);
     }
 
     /// Fires the alarm after `delay`.
@@ -743,7 +730,7 @@ async fn serve_socket(mut stream: TcpStream, objects: Objects) {
     if answer_probe(&mut stream).await {
         return;
     }
-    let mut upgraded: Option<(Arc<DoObject>, IngressSession, Vec<u8>)> = None;
+    let mut upgraded: Option<(Arc<DoObject>, Accepted)> = None;
     let callback = |req: &Request, mut resp: Response| -> Result<Response, ErrorResponse> {
         let reject = |code: u16| {
             let mut r = ErrorResponse::new(None);
@@ -772,13 +759,13 @@ async fn serve_socket(mut stream: TcpStream, objects: Objects) {
             path: req.uri().path(),
             sec_websocket_protocol: proto,
         };
-        let cfg = IngressConfig::new(id);
-        match IngressSession::on_upgrade(&ureq, &cfg, &mut rand::rng(), now()) {
-            Ok((ur, session)) => {
-                let (name, value) = ur.subprotocol_header();
-                resp.headers_mut()
-                    .insert(name, HeaderValue::from_static(value));
-                upgraded = Some((obj, session, ur.challenge.into_vec()));
+        match obj.upgrade(&ureq) {
+            Ok(accepted) => {
+                resp.headers_mut().insert(
+                    iroh_relay_ingress::SEC_WEBSOCKET_PROTOCOL,
+                    HeaderValue::from_static(accepted.protocol),
+                );
+                upgraded = Some((obj, accepted));
                 Ok(resp)
             }
             Err(e) => {
@@ -787,21 +774,32 @@ async fn serve_socket(mut stream: TcpStream, objects: Objects) {
             }
         }
     };
-    let ws = match tokio_tungstenite::accept_hdr_async(stream, callback).await {
+    let accepted = tokio_tungstenite::accept_hdr_async(stream, callback).await;
+    let Some((
+        obj,
+        Accepted {
+            sid,
+            challenge,
+            effects,
+            ..
+        },
+    )) = upgraded
+    else {
+        return;
+    };
+    let ws = match accepted {
         Ok(ws) => ws,
         Err(e) => {
             debug!("ws accept failed: {e}");
+            obj.on_close(sid);
             return;
         }
-    };
-    let Some((obj, session, challenge)) = upgraded else {
-        return;
     };
     let (mut sink, mut stream) = ws.split();
     let (tx, mut rx) = mpsc::unbounded_channel();
     // The challenge is the first message, before anything the node could send.
     let _ = tx.send(WsOut::Binary(challenge));
-    let sid = obj.add_socket(session, tx);
+    obj.add_socket(sid, tx, effects);
     let writer = tokio::spawn(async move {
         while let Some(out) = rx.recv().await {
             let res = match out {

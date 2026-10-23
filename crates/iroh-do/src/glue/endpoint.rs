@@ -1,10 +1,11 @@
 //! The endpoint object: what the `endpoint` Durable Object class that
 //! [`worker!`](crate::worker) declares delegates to (spec §5.5–§5.8, §13.4).
 //!
-//! One object per EndpointId, running the app named in its identity. It accepts peers' relay WebSockets as
-//! hibernatable sockets, runs one ingress session per socket, and hands
-//! authenticated peers and their datagrams to `iroh_do_core::Node`, which owns
-//! the iroh `Endpoint`.
+//! One object per EndpointId, running the app named in its identity. It accepts peers' relay
+//! WebSockets as hibernatable sockets and feeds their events to the ingress's socket table
+//! ([`Sockets`]), which keeps one session per socket and one socket per peer. It carries out
+//! the table's effects: frames, attachments and closes on the sockets, and authenticated
+//! peers and their datagrams for `iroh_do_core::Node`, which owns the iroh `Endpoint`.
 //!
 //! Memory is lost on hibernation, on eviction, and on a wasm panic (the
 //! worker-build shim re-runs the constructor in place, design note 002 §3). The
@@ -23,8 +24,7 @@ use std::{
 
 use iroh_base::{EndpointId, SecretKey};
 use iroh_relay_ingress::{
-    Close, IngressConfig, IngressSession, Output, SessionSnapshot, Status, UpgradeRequest,
-    close_code,
+    Effect, IngressConfig, SessionSnapshot, Sockets, UpgradeRequest, close_code,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
@@ -54,9 +54,6 @@ use crate::pkarr::{REPUBLISH_INTERVAL_MS, RETRY_BASE_MS};
 const TAG_RELAY: &str = "relay";
 /// Tag prefix carrying the socket's random id, used to find its session.
 const TAG_SID: &str = "sid:";
-/// Close code for a socket superseded by a newer one from the same peer
-/// (private-use range, RFC 6455 §7.4.2).
-const CLOSE_SUPERSEDED: u16 = 4000;
 /// Close code when the DO refuses traffic (no/invalid identity).
 const CLOSE_REFUSED: u16 = 1011;
 /// Close code for sockets of a destroyed endpoint (normal closure).
@@ -103,11 +100,6 @@ fn random_sid() -> Option<String> {
     Some(data_encoding::HEXLOWER.encode(&b))
 }
 
-struct Slot {
-    ws: WebSocket,
-    session: IngressSession,
-}
-
 /// Loaded, verified identity of this object.
 struct Me {
     id: EndpointId,
@@ -115,7 +107,6 @@ struct Me {
     app: AppEntry,
     relay_url: String,
     pkarr_relay: String,
-    cfg: IngressConfig,
 }
 
 /// An iroh endpoint as a Durable Object.
@@ -133,7 +124,10 @@ pub struct Object {
     me: RefCell<Option<Me>>,
     /// The stored identity exists but violates the name invariant (§13.4.4).
     refused: Cell<bool>,
-    sessions: RefCell<HashMap<String, Slot>>,
+    /// The ingress sessions of the relay sockets, once an identity is loaded.
+    table: RefCell<Option<Sockets<String>>>,
+    /// The relay sockets by id, for carrying out the table's effects.
+    sockets: RefCell<HashMap<String, WebSocket>>,
     node: RefCell<Option<Node>>,
     /// Persisted constructor-run count at this wake.
     wakes: Cell<i64>,
@@ -151,10 +145,86 @@ impl Object {
     }
 
     fn peer_of(&self, sid: &str) -> Option<EndpointId> {
-        self.sessions
+        self.table
             .borrow()
-            .get(sid)
-            .and_then(|s| s.session.peer())
+            .as_ref()
+            .and_then(|t| t.peer_of(&sid.to_owned()))
+    }
+
+    /// Runs `f` on the socket table and carries out the effects it returns. Returns the
+    /// handshake deadline among them, which the caller schedules.
+    fn with_table(
+        &self,
+        f: impl FnOnce(&mut Sockets<String>) -> Vec<Effect<String>>,
+    ) -> Option<Duration> {
+        let effects = {
+            let mut table = self.table.borrow_mut();
+            match table.as_mut() {
+                Some(t) => f(t),
+                None => return None,
+            }
+        };
+        self.apply(effects)
+    }
+
+    /// Carries out the socket table's effects, in order; returns the last deadline.
+    fn apply(&self, effects: Vec<Effect<String>>) -> Option<Duration> {
+        let local = self.me.borrow().as_ref().map(|m| m.id)?;
+        let ws = |sid: &str| self.sockets.borrow().get(sid).cloned();
+        let mut deadline = None;
+        for effect in effects {
+            match effect {
+                Effect::Send(sid, frame) => {
+                    if let Some(ws) = ws(&sid) {
+                        let _ = ws.send_with_bytes(frame.as_bytes());
+                    }
+                }
+                Effect::Persist(sid, s) => {
+                    let Some(ws) = ws(&sid) else { continue };
+                    if let Err(e) = ws.serialize_attachment(Attachment { v: 1, sid, s }) {
+                        warn!(event = "attachment_write_failed", endpoint = %local.to_z32(), error = %e);
+                    }
+                }
+                Effect::Close(sid, code, reason) => {
+                    if let Some(ws) = self.sockets.borrow_mut().remove(&sid) {
+                        let _ = ws.close(Some(code), Some(reason));
+                    }
+                }
+                Effect::PeerUp(peer, sid) => {
+                    if let Some(ws) = ws(&sid) {
+                        links::bind(local, peer, ws);
+                    }
+                    self.ensure_node();
+                    if let Some(node) = self.node.borrow().as_ref() {
+                        node.socket_authenticated(peer);
+                    }
+                }
+                Effect::PeerDown(peer) => {
+                    links::unbind(&local, &peer);
+                    if let Some(node) = self.node.borrow().as_ref() {
+                        node.socket_closed(peer);
+                    }
+                }
+                Effect::Datagrams {
+                    from,
+                    ecn,
+                    segment_size,
+                    contents,
+                } => {
+                    self.ensure_node();
+                    if let Some(node) = self.node.borrow().as_ref() {
+                        node.datagrams(
+                            from,
+                            ecn,
+                            contents.into(),
+                            segment_size.map(|s| usize::from(s.get())),
+                        );
+                    }
+                }
+                Effect::Deadline(d) => deadline = Some(d),
+            }
+        }
+        deadline
     }
 
     fn id_matches_name(&self, id: &EndpointId) -> bool {
@@ -195,22 +265,22 @@ impl Object {
             self.refused.set(true);
             return;
         }
+        *self.table.borrow_mut() = Some(Sockets::new(IngressConfig::new(id)));
         *self.me.borrow_mut() = Some(Me {
             id,
             app,
-            cfg: IngressConfig::new(id),
             secret: ident.secret,
             relay_url: ident.relay_url,
             pkarr_relay: ident.pkarr_relay,
         });
     }
 
-    /// Rebuilds sessions from the hibernated sockets' attachments, closing any
-    /// socket whose attachment is missing or whose handshake deadline passed.
-    /// Returns the number of sockets restored and closed.
+    /// Rebuilds the socket table from the hibernated sockets' attachments; the table closes
+    /// any socket whose attachment is missing or whose handshake deadline passed. Returns the
+    /// number of sockets restored and closed.
     fn restore_sessions(&self) -> (usize, usize) {
-        let me = self.me.borrow();
-        let Some(me) = me.as_ref() else {
+        let local = self.me.borrow().as_ref().map(|m| m.id);
+        let Some(local) = local else {
             // No identity: nothing may be served. Sockets cannot exist
             // (upgrades are refused), but close defensively.
             let mut closed = 0;
@@ -220,10 +290,9 @@ impl Object {
             }
             return (0, closed);
         };
-        let mut closed = 0;
-        links::reset(&me.id);
+        links::reset(&local);
         let t = now();
-        let mut sessions = self.sessions.borrow_mut();
+        let mut closed = 0;
         for ws in self.state.get_websockets() {
             let att = match ws.deserialize_attachment::<Attachment>() {
                 Ok(Some(a)) if a.v == 1 => a,
@@ -233,32 +302,14 @@ impl Object {
                     continue;
                 }
             };
-            let session = IngressSession::restore(att.s, &me.cfg);
-            if session.handshake_deadline().is_some_and(|d| d <= t) {
-                let _ = ws.close(
-                    Some(close_code::POLICY_VIOLATION),
-                    Some("handshake timeout"),
-                );
-                warn!(
-                    event = "ingress_auth",
-                    endpoint = %me.id.to_z32(),
-                    ok = false,
-                    reason = "handshake timeout",
-                );
-                closed += 1;
-                continue;
-            }
-            // Two attachments claiming the same peer (crash between supersede
-            // steps): keep the later, close the other.
-            if let Some(peer) = session.peer()
-                && let Some(old) = links::bind(me.id, peer, ws.clone())
-            {
-                let _ = old.close(Some(CLOSE_SUPERSEDED), Some("superseded"));
-                closed += 1;
-            }
-            sessions.insert(att.sid, Slot { ws, session });
+            self.sockets.borrow_mut().insert(att.sid.clone(), ws);
+            self.with_table(|t_| {
+                let fx = t_.restore(att.sid, Some(att.s), t);
+                closed += fx.iter().filter(|e| matches!(e, Effect::Close(..))).count();
+                fx
+            });
         }
-        (sessions.len(), closed)
+        (self.table.borrow().as_ref().map_or(0, |t| t.len()), closed)
     }
 
     fn sid_of(&self, ws: &WebSocket) -> Option<String> {
@@ -269,14 +320,10 @@ impl Object {
     }
 
     async fn upgrade(&self, req: Request) -> Result<Response> {
-        let cfg = {
-            let me = self.me.borrow();
-            match me.as_ref() {
-                Some(m) => m.cfg.clone(),
-                // §13.4.5: no identity → reject without writing storage.
-                None => return Response::error("not found", 404),
-            }
-        };
+        // §13.4.5: no identity → reject without writing storage.
+        if self.me.borrow().is_none() {
+            return Response::error("not found", 404);
+        }
         let proto = req.headers().get("sec-websocket-protocol")?;
         let path = req.path();
         let method = req.method().to_string();
@@ -286,42 +333,35 @@ impl Object {
             sec_websocket_protocol: proto.as_deref(),
         };
         let mut rng = rand_core::UnwrapErr(getrandom::SysRng);
-        let (resp, session) = match IngressSession::on_upgrade(&ureq, &cfg, &mut rng, now()) {
-            Ok(x) => x,
-            Err(rej) => return Response::error(rej.to_string(), rej.http_status()),
-        };
         let Some(sid) = random_sid() else {
             return Response::error("internal error", 500);
         };
+        let upgraded = {
+            let mut table = self.table.borrow_mut();
+            let Some(table) = table.as_mut() else {
+                return Response::error("not found", 404);
+            };
+            match table.upgrade(sid.clone(), &ureq, &mut rng, now()) {
+                Ok(u) => u,
+                Err(rej) => return Response::error(rej.to_string(), rej.http_status()),
+            }
+        };
+        let resp = upgraded.response;
         let pair = WebSocketPair::new()?;
         let sid_tag = format!("{TAG_SID}{sid}");
-        let snapshot = session.snapshot();
-        let deadline = session.handshake_deadline();
         self.state
             .accept_websocket_with_tags(&pair.server, &[TAG_RELAY, &sid_tag]);
         // Registered before any fallible or awaited step: a message on an
         // accepted socket must always find its session.
-        self.sessions.borrow_mut().insert(
-            sid.clone(),
-            Slot {
-                ws: pair.server.clone(),
-                session,
-            },
-        );
-        let opened = (|| {
-            if let Some(snap) = snapshot {
-                pair.server.serialize_attachment(Attachment {
-                    v: 1,
-                    sid: sid.clone(),
-                    s: snap,
-                })?;
-            }
-            pair.server.send_with_bytes(resp.challenge.as_bytes())
-        })();
-        if let Err(e) = opened {
+        self.sockets
+            .borrow_mut()
+            .insert(sid.clone(), pair.server.clone());
+        let deadline = self.apply(upgraded.effects);
+        if let Err(e) = pair.server.send_with_bytes(resp.challenge.as_bytes()) {
             error!(event = "upgrade_failed", endpoint = %self.endpoint(), error = %e);
             let _ = pair.server.close(Some(1011), Some("internal error"));
-            self.drop_session(&sid);
+            self.sockets.borrow_mut().remove(&sid);
+            self.with_table(|t| t.closed(&sid));
             return Err(e);
         }
         // Handshake deadline: enforced lazily by `on_message`, and for silent
@@ -336,104 +376,6 @@ impl Object {
         let mut out = Response::from_websocket(pair.client)?;
         out.headers_mut().set(name, value)?;
         Ok(out)
-    }
-
-    /// Closes a socket the ingress session rejected. Before authentication that is a
-    /// failed handshake, logged as `ingress_auth`.
-    fn close_with(&self, ws: &WebSocket, sid: &str, close: &Close) {
-        match self.peer_of(sid) {
-            None => warn!(
-                event = "ingress_auth",
-                endpoint = %self.endpoint(),
-                ok = false,
-                code = close.code,
-                reason = close.reason_text(),
-            ),
-            Some(peer) => info!(
-                event = "socket_close",
-                endpoint = %self.endpoint(),
-                peer = %peer.to_z32(),
-                by = "object",
-                code = close.code,
-                reason = close.reason_text(),
-            ),
-        }
-        if let Some(f) = &close.frame {
-            let _ = ws.send_with_bytes(f.as_bytes());
-        }
-        let _ = ws.close(Some(close.code), Some(close.reason_text()));
-        self.drop_session(sid);
-    }
-
-    fn drop_session(&self, sid: &str) {
-        let removed = self.sessions.borrow_mut().remove(sid);
-        let Some(peer) = removed.and_then(|slot| slot.session.peer()) else {
-            return;
-        };
-        let Some(local) = self.me.borrow().as_ref().map(|m| m.id) else {
-            return;
-        };
-        // Only unbind if no newer socket of the same peer took over.
-        if self
-            .sessions
-            .borrow()
-            .values()
-            .all(|s| s.session.peer() != Some(peer))
-        {
-            links::unbind(&local, &peer);
-            if let Some(node) = self.node.borrow().as_ref() {
-                node.socket_closed(peer);
-            }
-        }
-    }
-
-    fn on_authenticated(&self, sid: &str, peer: EndpointId) {
-        let Some(local) = self.me.borrow().as_ref().map(|m| m.id) else {
-            return;
-        };
-        // Supersede any older socket from the same peer (§5.2 item 8).
-        let older: Vec<String> = self
-            .sessions
-            .borrow()
-            .iter()
-            .filter(|(k, s)| k.as_str() != sid && s.session.peer() == Some(peer))
-            .map(|(k, _)| k.clone())
-            .collect();
-        let superseded = older.len();
-        for k in older {
-            if let Some(slot) = self.sessions.borrow_mut().remove(&k) {
-                if let Some(f) = slot.session.status_frame(Status::SameEndpointIdConnected) {
-                    let _ = slot.ws.send_with_bytes(f.as_bytes());
-                }
-                let _ = slot.ws.close(Some(CLOSE_SUPERSEDED), Some("superseded"));
-            }
-        }
-        let sessions = self.sessions.borrow();
-        let Some(slot) = sessions.get(sid) else {
-            return;
-        };
-        if let Some(snap) = slot.session.snapshot()
-            && let Err(e) = slot.ws.serialize_attachment(Attachment {
-                v: 1,
-                sid: sid.to_owned(),
-                s: snap,
-            })
-        {
-            warn!(event = "attachment_write_failed", endpoint = %local.to_z32(), error = %e);
-        }
-        info!(
-            event = "ingress_auth",
-            endpoint = %local.to_z32(),
-            ok = true,
-            peer = %peer.to_z32(),
-            superseded,
-        );
-        links::bind(local, peer, slot.ws.clone());
-        drop(sessions);
-        self.ensure_node();
-        if let Some(node) = self.node.borrow().as_ref() {
-            node.socket_authenticated(peer);
-        }
     }
 
     async fn internal_mint(&self, mut req: Request) -> Result<Response> {
@@ -530,6 +472,7 @@ impl Object {
 
     /// Drops what a failed mint loaded into memory; its storage was rolled back.
     fn forget_identity(&self, id: &EndpointId) {
+        self.table.borrow_mut().take();
         self.node.borrow_mut().take();
         self.me.borrow_mut().take();
         node::unregister(id);
@@ -564,7 +507,10 @@ impl Object {
         for ws in &sockets {
             let _ = ws.close(Some(CLOSE_DESTROYED), Some("destroyed"));
         }
-        self.sessions.borrow_mut().clear();
+        if let Some(t) = self.table.borrow_mut().as_mut() {
+            t.clear();
+        }
+        self.sockets.borrow_mut().clear();
         if let Some(local) = local {
             links::reset(&local);
             // Node tasks still winding down then find no storage to write to.
@@ -669,36 +615,9 @@ impl Object {
     /// Close sockets still unauthenticated past their handshake deadline;
     /// re-schedule for the earliest remaining one.
     fn sweep_unauthenticated(&self) -> Result<()> {
-        let t = now();
-        let expired: Vec<(String, WebSocket)> = self
-            .sessions
-            .borrow()
-            .iter()
-            .filter(|(_, s)| s.session.handshake_deadline().is_some_and(|d| d <= t))
-            .map(|(k, s)| (k.clone(), s.ws.clone()))
-            .collect();
-        for (sid, ws) in expired {
-            let _ = ws.close(
-                Some(close_code::POLICY_VIOLATION),
-                Some("handshake timeout"),
-            );
-            warn!(
-                event = "ingress_auth",
-                endpoint = %self.endpoint(),
-                ok = false,
-                reason = "handshake timeout",
-            );
-            self.drop_session(&sid);
-        }
-        let next = self
-            .sessions
-            .borrow()
-            .values()
-            .filter_map(|s| s.session.handshake_deadline())
-            .min();
         // All remaining deadlines are known here, so this replaces the row, which the alarm
         // leased to its retry time, rather than keeping the earlier of the two.
-        if let Some(d) = next {
+        if let Some(d) = self.with_table(|t| t.sweep(now())) {
             self.store.schedule(SCHED_SWEEP, d.as_millis() as f64, "")?;
         }
         Ok(())
@@ -724,7 +643,8 @@ impl Object {
         let Some(node) = self.node.borrow().clone() else {
             return;
         };
-        let (store, storage, endpoint) = (self.store.clone(), self.state.storage(), self.endpoint());
+        let (store, storage, endpoint) =
+            (self.store.clone(), self.state.storage(), self.endpoint());
         let d = Due {
             key: d.key.clone(),
             due_ms: d.due_ms,
@@ -738,7 +658,13 @@ impl Object {
                 Err(e) => Err(e.to_string()),
             };
             match res {
-                Ok(()) => info!(event = "alarm_app", endpoint, attempt, ok = true, ms = now_ms() - t0),
+                Ok(()) => info!(
+                    event = "alarm_app",
+                    endpoint,
+                    attempt,
+                    ok = true,
+                    ms = now_ms() - t0
+                ),
                 Err(e) => error!(
                     event = "alarm_entry_failed",
                     endpoint,
@@ -786,7 +712,8 @@ impl Object {
             store,
             me: RefCell::new(None),
             refused: Cell::new(false),
-            sessions: RefCell::new(HashMap::new()),
+            table: RefCell::new(None),
+            sockets: RefCell::new(HashMap::new()),
             node: RefCell::new(None),
             wakes: Cell::new(0),
         };
@@ -863,98 +790,19 @@ impl Object {
             let _ = ws.close(Some(close_code::PROTOCOL_ERROR), Some("unknown socket"));
             return Ok(());
         };
+        if !self.sockets.borrow().contains_key(&sid) {
+            // Accepted by an earlier instance and not restored: the table answers with a close.
+            self.sockets.borrow_mut().insert(sid.clone(), ws);
+        }
         let bytes = match msg {
             WebSocketIncomingMessage::Binary(b) => b,
             WebSocketIncomingMessage::String(_) => {
-                let close = self
-                    .sessions
-                    .borrow_mut()
-                    .get_mut(&sid)
-                    .map(|s| s.session.on_text_message());
-                if let Some(c) = close {
-                    self.close_with(&ws, &sid, &c);
-                }
+                self.with_table(|t| t.text(&sid));
                 return Ok(());
             }
         };
         let t = now();
-        // Process synchronously; collect effects that need other borrows.
-        let mut authed = None;
-        let mut datagrams: Vec<(EndpointId, u8, Option<std::num::NonZeroU16>, Vec<u8>)> =
-            Vec::new();
-        let result = {
-            let mut sessions = self.sessions.borrow_mut();
-            let Some(slot) = sessions.get_mut(&sid) else {
-                drop(sessions);
-                let _ = ws.close(Some(close_code::PROTOCOL_ERROR), Some("lost session"));
-                return Ok(());
-            };
-            let violations = slot.session.dst_violations();
-            let result = match slot.session.on_message(&bytes, t) {
-                Ok(outputs) => {
-                    for out in outputs {
-                        match out {
-                            // Pong and ServerConfirmsAuth: answered here, no Endpoint needed.
-                            Output::Send(frame) => {
-                                let _ = ws.send_with_bytes(frame.as_bytes());
-                            }
-                            Output::Authenticated { peer } => authed = Some(peer),
-                            Output::Datagrams { from, batch } => datagrams.push((
-                                from,
-                                iroh_relay_ingress::Ecn::to_bits(batch.ecn),
-                                batch.segment_size,
-                                batch.contents.to_vec(),
-                            )),
-                        }
-                    }
-                    Ok(())
-                }
-                Err(close) => Err(close),
-            };
-            // The count lives in the attachment, so hibernation cannot reset it
-            // (§5.2 item 4). Written only when it changes, never per datagram.
-            let now_violations = slot.session.dst_violations();
-            if result.is_ok() && now_violations != violations {
-                warn!(
-                    event = "dst_violation",
-                    endpoint = %self.endpoint(),
-                    peer = %slot.session.peer().map(|p| p.to_z32()).unwrap_or_default(),
-                    count = now_violations,
-                );
-                if let Some(snap) = slot.session.snapshot()
-                    && let Err(e) = slot.ws.serialize_attachment(Attachment {
-                        v: 1,
-                        sid: sid.clone(),
-                        s: snap,
-                    })
-                {
-                    warn!(
-                        event = "attachment_write_failed",
-                        endpoint = %self.endpoint(),
-                        error = %e,
-                    );
-                }
-            }
-            result
-        };
-        if let Err(close) = result {
-            self.close_with(&ws, &sid, &close);
-            return Ok(());
-        }
-        if let Some(peer) = authed {
-            self.on_authenticated(&sid, peer);
-        }
-        for (from, ecn, seg, contents) in datagrams {
-            self.ensure_node();
-            if let Some(node) = self.node.borrow().as_ref() {
-                node.datagrams(
-                    from,
-                    ecn,
-                    contents.into(),
-                    seg.map(|s| usize::from(s.get())),
-                );
-            }
-        }
+        self.with_table(|table| table.message(&sid, &bytes, t));
         Ok(())
     }
 
@@ -976,7 +824,8 @@ impl Object {
                 reason,
                 clean,
             );
-            self.drop_session(&sid);
+            self.sockets.borrow_mut().remove(&sid);
+            self.with_table(|t| t.closed(&sid));
         }
         // Complete the close handshake (compat dates before auto-reply).
         let _ = ws.close(Some(crate::route::sendable_close_code(code)), Some("bye"));
@@ -993,7 +842,8 @@ impl Object {
                 by = "error",
                 error = %error,
             );
-            self.drop_session(&sid);
+            self.sockets.borrow_mut().remove(&sid);
+            self.with_table(|t| t.closed(&sid));
         }
         Ok(())
     }
@@ -1154,7 +1004,9 @@ impl Object {
                 }
             }
             Ok(None) => {}
-            Err(e) => error!(event = "bound_marker_failed", endpoint = %self.endpoint(), error = %e),
+            Err(e) => {
+                error!(event = "bound_marker_failed", endpoint = %self.endpoint(), error = %e)
+            }
         }
     }
 

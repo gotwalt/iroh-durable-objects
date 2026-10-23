@@ -148,6 +148,7 @@
 
 mod proto;
 mod session;
+mod table;
 
 pub use iroh_base::EndpointId;
 
@@ -163,4 +164,5 @@ pub use crate::{
         IngressSession, Output, Outputs, Reject, SessionSnapshot, UpgradeRequest, UpgradeResponse,
         close_code,
     },
+    table::{CLOSE_SUPERSEDED, Effect, Sockets, Upgraded},
 };
