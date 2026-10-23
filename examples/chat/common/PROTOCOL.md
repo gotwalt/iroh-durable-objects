@@ -360,7 +360,7 @@ the dial-back.
 - That every event is queued for a member. While a delivery to a member is being
   written, a member that does not read can hold it up until `t_silent`, and an
   object may bound what it queues for that member meanwhile by dropping the oldest
-  lines. The TypeScript server keeps at most `SINCE_MAX` = 500, so one `/since`
+  lines. The object keeps at most `SINCE_MAX` = 500, so one `/since`
   fetches what was dropped.
 - The grouping of delivered lines into streams, and the order of a delivery
   relative to the reply of the request that caused it (they travel on different
@@ -411,10 +411,9 @@ Where note 008 is silent or says otherwise, this document holds.
    not mention it.
 9. **`/history 0`** replies with no lines; values above 200 are silently reduced.
 10. **Retention alarm.** Note 008 and `docs/design.md` speak of a daily alarm. The
-    apps keep a single pending alarm under the key `prune`, not a daily one, due
-    14 days plus 60 seconds after the newest insert. The Rust app moves it on every
-    insert; the TypeScript server arms it on an insert only when none is pending, and
-    when it fires moves it to 14 days plus 60 seconds after the newest record left.
+    apps keep a single pending alarm under the key `prune`, not a daily one. An
+    insert arms it, 14 days plus 60 seconds later, only when none is pending; when it
+    fires it moves itself to 14 days plus 60 seconds after the newest record left.
 11. **The chat client** (`examples/chat/client/src/room.rs`) differs from the
     object in two ways, both on purpose and both recorded in
     `fixtures_check.rs`: its `Event` has no `hist` field, so it drops it; and its

@@ -9,7 +9,13 @@
 //!   and when it was first and last seen.
 //! - `log_meta`: named integers. `log_seq`, the largest `seq` of a pruned log that was left
 //!   empty; `room_seq`, the `seq` of the newest room event, which becomes the next room
-//!   event's `prev`.
+//!   event's `prev`; `prune_due_ms`, when the prune alarm is due.
+//!
+//! Every insert prunes. A log that stops growing is pruned once more by an alarm
+//! [`PRUNE_DELAY`] after its newest record. An insert does not move that alarm, which would
+//! write the schedule and re-arm the alarm per message: it arms it only if none is pending,
+//! and the alarm, when it fires, moves itself to [`PRUNE_DELAY`] after the newest record left
+//! ([`prune_due`]).
 //!
 //! The schema is created as is, with no versioning or upgrade path: changing it means
 //! resetting the object's state.
@@ -28,6 +34,8 @@ pub const LOG_MAX_AGE: Duration = Duration::from_secs(14 * 24 * 3600);
 
 /// Schedule key of the prune of a log that stopped growing.
 pub const PRUNE_KEY: &str = "prune";
+/// Delay of that prune after the newest record: when the record expires, and a minute more.
+pub const PRUNE_DELAY: Duration = Duration::from_secs(LOG_MAX_AGE.as_secs() + 60);
 
 /// The tables and indexes, created idempotently on every wake.
 pub const SCHEMA: &[&str] = &[
@@ -40,6 +48,10 @@ pub const SCHEMA: &[&str] = &[
         text TEXT NOT NULL,
         prev INTEGER NOT NULL DEFAULT 0)",
     "CREATE INDEX IF NOT EXISTS log_peer ON log(peer)",
+    // The room events among the records, for `/join`, `/history` and `/since`, which would
+    // otherwise walk the diagnostic records too: up to the whole log when it holds few room
+    // events. SQLite uses a partial index for a query whose WHERE repeats the index's term.
+    "CREATE INDEX IF NOT EXISTS log_room ON log(seq) WHERE kind IN ('msg', 'act', 'join', 'part', 'nick')",
     "CREATE TABLE IF NOT EXISTS log_meta(name TEXT PRIMARY KEY, value INTEGER NOT NULL)",
     "CREATE TABLE IF NOT EXISTS members(
         peer TEXT PRIMARY KEY,
@@ -52,7 +64,7 @@ pub const SCHEMA: &[&str] = &[
     "CREATE UNIQUE INDEX IF NOT EXISTS members_joined_nick ON members(nick COLLATE NOCASE) WHERE joined = 1",
 ];
 
-/// Kinds of room events, as stored in `log.kind`.
+/// Kinds of room events, as stored in `log.kind`; the term of the `log_room` index.
 const ROOM_KINDS: &str = "('msg', 'act', 'join', 'part', 'nick')";
 
 /// Records ever inserted: the largest `seq` in the log, or the one saved in `log_meta` when
@@ -73,6 +85,15 @@ pub const ROOM_SEQ: &str =
 /// Records `?` as the newest room event's `seq`.
 pub const SET_ROOM_SEQ: &str = "INSERT INTO log_meta(name, value) VALUES ('room_seq', ?)
  ON CONFLICT(name) DO UPDATE SET value = excluded.value";
+/// When the prune alarm is due, ms since the UNIX epoch; no row if none is pending.
+pub const PRUNE_DUE: &str = "SELECT value FROM log_meta WHERE name = 'prune_due_ms'";
+/// Records `?` as when the prune alarm is due.
+pub const SET_PRUNE_DUE: &str = "INSERT INTO log_meta(name, value) VALUES ('prune_due_ms', ?)
+ ON CONFLICT(name) DO UPDATE SET value = excluded.value";
+/// Records that no prune alarm is pending.
+pub const CLEAR_PRUNE_DUE: &str = "DELETE FROM log_meta WHERE name = 'prune_due_ms'";
+/// Time of the newest record.
+pub const LOG_NEWEST_TS: &str = "SELECT ts_ms FROM log ORDER BY seq DESC LIMIT 1";
 /// Saves the newest `seq` in `log_meta` if the newest record is older than `?1` (ms since
 /// the UNIX epoch), that is, if [`LOG_PRUNE_AGE`] is about to empty the log. Writes nothing
 /// otherwise.
@@ -193,6 +214,40 @@ pub fn log_insert(
     }
     log_prune(sql, ts_ms)?;
     Ok((u64::try_from(seq).unwrap_or(0), prev))
+}
+
+/// Records that the prune alarm is due [`PRUNE_DELAY`] after `ts_ms` unless one is pending;
+/// returns whether the caller must schedule it. A due time already past is an alarm that
+/// never ran or did not move itself on, and is replaced.
+pub fn arm_prune(sql: &dyn Sql, ts_ms: i64) -> Result<bool, SqlError> {
+    let pending = sql.value(PRUNE_DUE, &[])?.and_then(|v| v.as_i64());
+    if pending.is_some_and(|due| due >= ts_ms) {
+        return Ok(false);
+    }
+    sql.exec(
+        SET_PRUNE_DUE,
+        &[(ts_ms + PRUNE_DELAY.as_millis() as i64).into()],
+    )?;
+    Ok(true)
+}
+
+/// Prunes the log at `now_ms`, for the prune alarm, and records when the alarm is next due:
+/// [`PRUNE_DELAY`] after the newest record left, or never if the log is empty. Returns that
+/// time, which the caller schedules.
+pub fn prune_due(sql: &dyn Sql, now_ms: i64) -> Result<Option<i64>, SqlError> {
+    log_prune(sql, now_ms)?;
+    let newest = sql.value(LOG_NEWEST_TS, &[])?.and_then(|v| v.as_i64());
+    match newest {
+        Some(ts) => {
+            let due = ts + PRUNE_DELAY.as_millis() as i64;
+            sql.exec(SET_PRUNE_DUE, &[due.into()])?;
+            Ok(Some(due))
+        }
+        None => {
+            sql.exec(CLEAR_PRUNE_DUE, &[])?;
+            Ok(None)
+        }
+    }
 }
 
 /// The newest room event's `seq`, 0 if none.
@@ -321,19 +376,91 @@ mod tests {
         assert!(!p.contains("SCAN log"), "{p}");
     }
 
-    /// Room history walks the primary key from `seq` or backwards from the end; only the
-    /// `LIMIT`ed result is sorted, never the table.
+    /// Room history walks the `log_room` partial index, which holds room events only, from
+    /// `seq` or backwards from the end; `/log` walks the primary key. Only the `LIMIT`ed result
+    /// is sorted, never the table.
     #[test]
-    fn history_walks_primary_key() {
+    fn history_walks_room_index() {
         let db = Connection::open_in_memory().unwrap();
         create(&db);
         let p = plan(&db, &events_after_sql());
-        assert!(p.contains("USING INTEGER PRIMARY KEY (rowid>?)"), "{p}");
-        assert!(!p.contains("TEMP B-TREE"), "{p}");
-        for sql in [events_recent_sql(), LOG_RECENT.to_string()] {
-            let p = plan(&db, &sql);
-            assert_eq!(p.matches("TEMP B-TREE").count(), 1, "{p}");
-            assert!(p.starts_with("CO-ROUTINE (subquery-1); SCAN log;"), "{p}");
+        assert_eq!(p, "SEARCH log USING INDEX log_room (seq>?)");
+        let p = plan(&db, &events_recent_sql());
+        assert_eq!(p.matches("TEMP B-TREE").count(), 1, "{p}");
+        assert!(
+            p.starts_with("CO-ROUTINE (subquery-1); SCAN log USING INDEX log_room;"),
+            "{p}"
+        );
+        let p = plan(&db, LOG_RECENT);
+        assert_eq!(p.matches("TEMP B-TREE").count(), 1, "{p}");
+        assert!(p.starts_with("CO-ROUTINE (subquery-1); SCAN log;"), "{p}");
+    }
+
+    /// An insert arms the prune alarm only when none is pending; the alarm moves itself to
+    /// the newest record left, and clears itself when the log is empty.
+    #[test]
+    fn prune_alarm_armed_once_per_quiet_period() {
+        let db = Connection::open_in_memory().unwrap();
+        create(&db);
+        let sql = Rusqlite(&db);
+        let delay = PRUNE_DELAY.as_millis() as i64;
+        let due = || sql.value(PRUNE_DUE, &[]).unwrap().and_then(|v| v.as_i64());
+        assert!(arm_prune(&sql, 1_000).unwrap());
+        assert_eq!(due(), Some(1_000 + delay));
+        insert(&db, 1_000, "a");
+        // Later inserts while it is pending leave it alone.
+        assert!(!arm_prune(&sql, 100_000).unwrap());
+        insert(&db, 100_000, "b");
+        assert_eq!(due(), Some(1_000 + delay));
+        // The alarm fires, prunes "a", and moves itself to the newest record left.
+        assert_eq!(prune_due(&sql, 1_000 + delay).unwrap(), Some(100_000 + delay));
+        assert_eq!(due(), Some(100_000 + delay));
+        assert_eq!(seqs(&db), [2]);
+        // Once everything has expired the log is empty and no alarm is pending.
+        assert_eq!(prune_due(&sql, 100_000 + delay).unwrap(), None);
+        assert_eq!(due(), None);
+        // A due time already past is replaced.
+        sql.exec(SET_PRUNE_DUE, &[10i64.into()]).unwrap();
+        assert!(arm_prune(&sql, 20).unwrap());
+    }
+
+    /// [`Sql`] over `rusqlite`, for the functions above.
+    struct Rusqlite<'a>(&'a Connection);
+
+    impl Sql for Rusqlite<'_> {
+        fn exec(&self, query: &str, params: &[Value]) -> Result<Vec<Vec<Value>>, SqlError> {
+            use rusqlite::types::{Value as V, ValueRef};
+            let err = |e: rusqlite::Error| SqlError(e.to_string());
+            let mut stmt = self.0.prepare(query).map_err(err)?;
+            let params: Vec<V> = params
+                .iter()
+                .map(|p| match p {
+                    Value::Null => V::Null,
+                    Value::Integer(i) => V::Integer(*i),
+                    Value::Real(f) => V::Real(*f),
+                    Value::Text(t) => V::Text(t.clone()),
+                    Value::Blob(b) => V::Blob(b.clone()),
+                })
+                .collect();
+            let n = stmt.column_count();
+            let mut rows = stmt
+                .query(rusqlite::params_from_iter(params))
+                .map_err(err)?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().map_err(err)? {
+                let mut r = Vec::with_capacity(n);
+                for i in 0..n {
+                    r.push(match row.get_ref(i).map_err(err)? {
+                        ValueRef::Null => Value::Null,
+                        ValueRef::Integer(i) => Value::Integer(i),
+                        ValueRef::Real(f) => Value::Real(f),
+                        ValueRef::Text(t) => Value::Text(String::from_utf8_lossy(t).into_owned()),
+                        ValueRef::Blob(b) => Value::Blob(b.to_vec()),
+                    });
+                }
+                out.push(r);
+            }
+            Ok(out)
         }
     }
 

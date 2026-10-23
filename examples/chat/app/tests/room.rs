@@ -610,3 +610,50 @@ fn chat_stats(obj: &iroh_do_harness::DoObject) -> ChatStats {
     obj.with_app(|a: &ChatApp| a.stats())
         .expect("live chat app")
 }
+
+/// A request whose write fails stores nothing and is answered `storage error`: the member's
+/// new state and its event are written together or not at all. A request that fails in a
+/// read is not answered: the room resets the stream.
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_write_stores_nothing() {
+    init_tracing();
+    let h = Harness::start().await.unwrap();
+    let obj = h.mint::<ChatApp>(Timings::default());
+    let ana = Member::join_room(&h, &obj).await;
+    let conn = ana.ep.connect(ana.room.clone(), ROOM_ALPN).await.unwrap();
+    let r = ana.request_on(&conn, "/join ana").await;
+    assert_eq!(r.last().unwrap()["t"], "ready");
+    let nick = || {
+        obj.with_sql(|s| s.exec("SELECT nick, joined FROM members", &[]))
+            .unwrap()
+    };
+    let before = nick();
+    obj.with_sql(|s| {
+        s.exec(
+            "CREATE TRIGGER no_log BEFORE INSERT ON log BEGIN SELECT RAISE(ABORT, 'test'); END",
+            &[],
+        )
+    })
+    .unwrap();
+    for req in ["/nick bo", "/quit bye"] {
+        let r = ana.request_on(&conn, req).await;
+        assert_eq!(r[0]["text"], "storage error", "{req}: {r:?}");
+        assert_eq!(nick(), before, "{req} changed the member");
+    }
+    obj.with_sql(|s| s.exec("DROP TRIGGER no_log", &[])).unwrap();
+    let r = ana.request_on(&conn, "/nick bo").await;
+    assert_eq!(r[0]["t"], "ok", "{r:?}");
+
+    // A read that fails: no reply, the stream is reset.
+    obj.with_sql(|s| s.exec("ALTER TABLE members RENAME TO gone", &[]))
+        .unwrap();
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    send.write_all(b"/who\n").await.unwrap();
+    send.finish().unwrap();
+    let res = timeout(Duration::from_secs(10), recv.read_to_end(1 << 16))
+        .await
+        .expect("answer in time");
+    assert!(res.is_err(), "expected a reset, got {res:?}");
+    conn.close(0u32.into(), b"done");
+    ana.ep.close().await;
+}

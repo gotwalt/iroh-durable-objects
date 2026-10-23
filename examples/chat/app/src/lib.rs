@@ -32,7 +32,7 @@ use std::{
     time::Duration,
 };
 
-use iroh_do_core::{App, Ctx, EndpointId, Protocols};
+use iroh_do_core::{Alarm, AlarmError, App, Ctx, EndpointId, Protocols, SqlError};
 use tracing::warn;
 
 /// ALPN of the echo protocol: each bi stream is echoed back.
@@ -57,8 +57,6 @@ pub const DELIVERY_BATCH: Duration = Duration::from_millis(50);
 pub const MAX_LOG_TEXT: usize = 1024;
 /// Prefix of the schedule keys of dial-backs; the rest is the peer's id in z-base-32.
 const CALLBACK_KEY: &str = "callback:";
-/// How long after its newest record expires a quiet log is pruned.
-const PRUNE_SLACK: Duration = Duration::from_secs(60);
 
 /// Kind of a message-log record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,11 +198,8 @@ impl Chat {
         }
     }
 
-    /// Appends a record to the log, truncating `text` to [`MAX_LOG_TEXT`] bytes; returns the
-    /// stored record.
-    ///
-    /// Inserting prunes the log. A log that stops growing is pruned once more when its newest
-    /// record expires, from the alarm this schedules.
+    /// Appends a diagnostic record to the log, as [`Chat::append_with`] does; logs an error
+    /// and returns `None` if nothing was stored.
     pub(crate) fn append(
         &self,
         peer: EndpointId,
@@ -212,15 +207,47 @@ impl Chat {
         nick: &str,
         text: &str,
     ) -> Option<LogRow> {
+        match self.append_with(None, peer, kind, nick, text) {
+            Ok(row) => Some(row),
+            Err(e) => {
+                warn!(event = "chat_sql_failed", what = "log_insert", error = %e);
+                None
+            }
+        }
+    }
+
+    /// Appends a record to the log, truncating `text` to [`MAX_LOG_TEXT`] bytes, and writes
+    /// `member` with it if given: both or neither, in one transaction. Returns the stored
+    /// record, or the error if nothing was stored.
+    ///
+    /// Inserting prunes the log. A log that stops growing is pruned once more when its newest
+    /// record expires, from an alarm that the first insert of a quiet period schedules.
+    pub(crate) fn append_with(
+        &self,
+        member: Option<&Member>,
+        peer: EndpointId,
+        kind: LogKind,
+        nick: &str,
+        text: &str,
+    ) -> Result<LogRow, SqlError> {
         let text = truncate(text, MAX_LOG_TEXT);
         let ts = store::now_ms();
         let z = peer.to_z32();
-        let (seq, prev) = self.sql("log_insert", |s| {
-            store::log_insert(s, ts, &z, kind, nick, text)
-        })?;
-        self.ctx
-            .schedule(store::PRUNE_KEY, store::LOG_MAX_AGE + PRUNE_SLACK, "");
-        Some(LogRow {
+        let (seq, prev, arm) = self
+            .ctx
+            .transaction(|s| {
+                if let Some(m) = member {
+                    store::set_member(s, m, ts)?;
+                }
+                let (seq, prev) = store::log_insert(s, ts, &z, kind, nick, text)?;
+                Ok((seq, prev, store::arm_prune(s, ts)?))
+            })
+            .unwrap_or_else(|| Err(SqlError("the object has no database".into())))?;
+        // After the commit: a schedule of a rolled-back insert would prune nothing.
+        if arm {
+            self.ctx.schedule(store::PRUNE_KEY, store::PRUNE_DELAY, "");
+        }
+        Ok(LogRow {
             seq,
             prev,
             ts_ms: u64::try_from(ts).unwrap_or(0),
@@ -229,6 +256,21 @@ impl Chat {
             nick: nick.to_string(),
             text: text.to_string(),
         })
+    }
+
+    /// The prune alarm: prunes the log and schedules the next prune for when its newest
+    /// record expires.
+    fn prune(&self) -> Result<(), SqlError> {
+        let now = store::now_ms();
+        let due = self
+            .ctx
+            .transaction(|s| store::prune_due(s, now))
+            .unwrap_or(Ok(None))?;
+        if let Some(due) = due {
+            let delay = Duration::from_millis(u64::try_from(due - now).unwrap_or(0));
+            self.ctx.schedule(store::PRUNE_KEY, delay, "");
+        }
+        Ok(())
     }
 }
 
@@ -271,18 +313,21 @@ impl App for ChatApp {
         store::SCHEMA
     }
 
-    fn on_alarm(&self, ctx: &Ctx, key: &str, _payload: &str) {
-        if let Some(peer) = key.strip_prefix(CALLBACK_KEY) {
+    /// Runs a dial-back or the prune. A dial-back runs to its end inside the alarm, so that
+    /// the host keeps its schedule row until it has; its outcome, delivered or not, is
+    /// recorded and final, and only a failed prune is retried.
+    async fn on_alarm(&self, _ctx: &Ctx, alarm: Alarm<'_>) -> Result<(), AlarmError> {
+        if let Some(peer) = alarm.key.strip_prefix(CALLBACK_KEY) {
             match EndpointId::from_z32(peer) {
-                Ok(peer) => {
-                    let chat = self.chat.clone();
-                    ctx.spawn(async move { ctl::dial_notify(&chat, peer).await });
-                }
-                Err(_) => warn!(event = "bad_schedule_key", key),
+                Ok(peer) => ctl::dial_notify(&self.chat, peer).await,
+                Err(_) => warn!(event = "bad_schedule_key", key = alarm.key),
             }
-        } else if key == store::PRUNE_KEY {
-            self.chat
-                .sql("log_prune", |s| store::log_prune(s, store::now_ms()));
+            Ok(())
+        } else if alarm.key == store::PRUNE_KEY {
+            Ok(self.chat.prune()?)
+        } else {
+            warn!(event = "bad_schedule_key", key = alarm.key);
+            Ok(())
         }
     }
 
