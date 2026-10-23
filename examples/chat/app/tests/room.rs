@@ -640,7 +640,8 @@ async fn failed_write_stores_nothing() {
         assert_eq!(r[0]["text"], "storage error", "{req}: {r:?}");
         assert_eq!(nick(), before, "{req} changed the member");
     }
-    obj.with_sql(|s| s.exec("DROP TRIGGER no_log", &[])).unwrap();
+    obj.with_sql(|s| s.exec("DROP TRIGGER no_log", &[]))
+        .unwrap();
     let r = ana.request_on(&conn, "/nick bo").await;
     assert_eq!(r[0]["t"], "ok", "{r:?}");
 

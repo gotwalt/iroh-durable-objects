@@ -60,7 +60,10 @@ async fn send(req: Request, what: &str) -> Result<(u16, Vec<u8>), String> {
     // `setTimeout`, and a pending timer would keep the object from hibernating.
     let timeout = async {
         n0_future::time::sleep(REQUEST_TIMEOUT).await;
-        Err(format!("{what}: no answer within {}s", REQUEST_TIMEOUT.as_secs()))
+        Err(format!(
+            "{what}: no answer within {}s",
+            REQUEST_TIMEOUT.as_secs()
+        ))
     };
     let out = n0_future::future::race(exchange, timeout).await;
     if out.is_err() {

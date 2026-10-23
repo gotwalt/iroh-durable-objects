@@ -108,9 +108,11 @@ mod tests {
     }
 
     fn lease(db: &Connection, key: &str, read_due: f64, retry: f64) -> Option<(f64, i64)> {
-        db.query_row(SCHEDULE_LEASE, rusqlite::params![retry, key, read_due], |r| {
-            Ok((r.get(1)?, r.get(3)?))
-        })
+        db.query_row(
+            SCHEDULE_LEASE,
+            rusqlite::params![retry, key, read_due],
+            |r| Ok((r.get(1)?, r.get(3)?)),
+        )
         .ok()
     }
 

@@ -234,10 +234,7 @@ impl Store {
     /// retry time before it runs, and [`Store::claim`] removes it after it succeeded.
     pub fn due(&self, now_ms: f64) -> Result<Vec<Due>> {
         self.sql
-            .exec(
-                schema::SCHEDULE_DUE,
-                vec![SqlStorageValue::Float(now_ms)],
-            )?
+            .exec(schema::SCHEDULE_DUE, vec![SqlStorageValue::Float(now_ms)])?
             .to_array()
     }
 

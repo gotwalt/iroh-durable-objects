@@ -4,8 +4,9 @@
 //! - `broken`: its schema is invalid SQL, so every mint of it fails.
 //! - `panic`: its constructor panics, so a mint of it traps inside the mint's transaction.
 //! - `fault`: schedules one piece of alarm work at mint. The first run fails, the second
-//!   panics, the third succeeds; each run that returns is recorded in `fault_runs`. A
-//!   connection with ALPN [`TRAP_ALPN`] panics in its handler while the endpoint is bound.
+//!   panics, the third succeeds; each run that returns is recorded in `fault_runs`. Its
+//!   handler for [`TRAP_ALPN`], the ALPN of iroh's echo example, panics, so that the stock
+//!   echo client can make the object trap while its endpoint is bound.
 
 use iroh::{
     endpoint::Connection,
@@ -18,8 +19,8 @@ use iroh_do::{
 
 iroh_do::worker! { apps: [iroh_do_echo::EchoApp, Fault, Broken, PanicOnNew] }
 
-/// ALPN whose handler panics.
-pub const TRAP_ALPN: &[u8] = b"iroh-do-test/trap/0";
+/// ALPN whose handler panics: iroh's echo example's.
+pub const TRAP_ALPN: &[u8] = iroh_do_echo::ALPN;
 
 /// See the crate docs.
 pub struct Fault;

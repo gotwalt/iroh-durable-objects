@@ -5,7 +5,7 @@
 //
 // Uses the bundle of tests/workerd/fault-worker in build/fault-worker/, built with
 //   deploy/build-worker.sh tests/workerd/fault-worker "$PWD/build/fault-worker"
-// and the peer at target/debug/iroh-do-test-peer (override with IROH_DO_TEST_PEER). The
+// and the stock echo client at target/debug/iroh-do-echo-client (override with IROH_DO_ECHO). The
 // fault worker hosts iroh's echo app and apps that fail on purpose (see its crate docs).
 // Assertions read the objects' SQLite files and the Worker's structured logs.
 //
@@ -22,7 +22,7 @@ import { Miniflare } from "miniflare";
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..", "..");
 const bundle = join(repo, "build", "fault-worker");
-const peerBin = process.env.IROH_DO_TEST_PEER ?? join(repo, "target", "debug", "iroh-do-test-peer");
+const echoBin = process.env.IROH_DO_ECHO ?? join(repo, "target", "debug", "iroh-do-echo-client");
 const port = Number(process.env.PORT ?? 8851);
 const ADMIN_TOKEN = "fault-test-token";
 const SCRIPT = "iroh-do";
@@ -128,7 +128,6 @@ const until = async (pred, ms) => {
   }
 };
 
-let peer;
 try {
   await mf.ready;
   const ns = await mf.getDurableObjectNamespace("ENDPOINTS");
@@ -186,33 +185,41 @@ try {
   check("runs that returned: attempts 0 and 2", JSON.stringify(runs()) === "[0,2]", JSON.stringify(runs()));
   check("schedule is empty", query(file(), "SELECT key FROM schedule").length === 0,
     JSON.stringify(query(file(), "SELECT key FROM schedule")));
-  const meta = query(file(), "SELECT * FROM _cf_METADATA");
-  console.log(`info _cf_METADATA: ${JSON.stringify(meta)}`);
   console.log(`info alarm case took ${((Date.now() - t0) / 1000).toFixed(0)} s`);
 
-  // 4. The bound marker is set while the endpoint is bound and cleared by a clean close: a
-  //    connection with an ALPN the app does not serve binds the endpoint, which closes after
-  //    t_linger.
-  peer = spawn(peerBin, [E, "--local", String(port)], { stdio: ["pipe", "pipe", "pipe"] });
-  const lines = [];
-  peer.stdout.on("data", (d) => lines.push(...d.toString().split("\n").filter(Boolean)));
-  peer.stderr.on("data", (d) => process.env.VERBOSE && process.stdout.write(`  peer| ${d}`));
-  const ready = await until(() => lines.find((l) => l.startsWith("ready")), 30_000);
-  check("peer ready", ready !== null, lines.join(" | "));
-  const builds = counter("endpoint_builds") ?? 0;
-  peer.stdin.write("echo x iroh-do-test/none/0\n");
-  await until(() => lines.some((l) => l.startsWith("echo")), 15_000);
-  check("endpoint bound for the connection", await until(() => counter("endpoint_builds") > builds, 15_000) !== null);
-  const cleared = await until(() => counter("bound_at_ms") === undefined, 15_000);
-  check("a clean close clears the marker", cleared !== null, `bound_at_ms ${counter("bound_at_ms")}`);
+  // 4. The bound marker is set while the endpoint is bound and cleared by a clean close: an
+  //    echo round trip on an endpoint of the echo app, whose endpoint closes after t_linger.
+  const echoOnce = (id, text) => new Promise((resolve) => {
+    const child = spawn(echoBin, [id, text, "--local", String(port)], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => process.env.VERBOSE && process.stdout.write(`  echo| ${d}`));
+    const timer = setTimeout(() => child.kill(), 20_000);
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      resolve({ code, out: out.trim() });
+    });
+  });
+  const em = await mint("echo");
+  const EE = em.status === 200 ? JSON.parse(em.body).id : null;
+  check("mint echo", EE !== null, em.body);
+  const echoFile = () => objectFiles().find((f) => f.endsWith(`${ns.idFromName(EE).toString()}.sqlite`));
+  const echoCounter = (name) => query(echoFile(), "SELECT value FROM counters WHERE name = ?", name)[0]?.value;
+  const round = await echoOnce(EE, "marker");
+  check("echo round trip", round.code === 0 && round.out === "marker", JSON.stringify(round));
+  check("endpoint was bound", (echoCounter("endpoint_builds") ?? 0) >= 1);
+  // The connection closes when the client does, or after t_idle (10 s); the endpoint closes
+  // t_linger (2 s) later.
+  const cleared = await until(() => echoCounter("bound_at_ms") === undefined, 30_000);
+  check("a clean close clears the marker", cleared !== null, `bound_at_ms ${echoCounter("bound_at_ms")}`);
 
-  //    A trap while the endpoint is bound leaves the marker set; the next constructor logs
-  //    `evicted_active`.
+  //    The fault app serves a handler that panics under the echo ALPN. A trap while the
+  //    endpoint is bound leaves the marker set; the next constructor logs `evicted_active`.
   const wakes1 = counter("wakes");
-  peer.stdin.write("echo x iroh-do-test/trap/0\n");
+  const trap = echoOnce(E, "trap");
   const marked = await until(() => counter("bound_at_ms"), 15_000);
   check("bound marker set while the endpoint was bound", marked !== null);
-  await until(() => lines.filter((l) => l.startsWith("echo")).length >= 2, 15_000);
+  await trap;
   await mf.dispatchFetch(`http://admin.localhost:${port}/status/${E}`);
   check("the trap re-ran the constructor", await until(() => counter("wakes") > wakes1, 15_000) !== null,
     `wakes ${wakes1} -> ${counter("wakes")}`);
@@ -221,8 +228,6 @@ try {
   console.log(`FAIL exception: ${e?.stack ?? e}`);
   failures++;
 } finally {
-  peer?.stdin.end();
-  peer?.kill();
   await mf.dispose();
   rmSync(persistDir, { recursive: true, force: true });
 }

@@ -164,10 +164,7 @@ impl Host for DoHost {
             if let Err(e) = handles.store.bump(COUNTER_ENDPOINT_BUILDS) {
                 error!(event = "builds_bump_failed", error = %e);
             }
-            if let Err(e) = handles
-                .store
-                .set_counter(COUNTER_BOUND_AT, now_ms() as i64)
-            {
+            if let Err(e) = handles.store.set_counter(COUNTER_BOUND_AT, now_ms() as i64) {
                 error!(event = "bound_marker_failed", error = %e);
             }
         });

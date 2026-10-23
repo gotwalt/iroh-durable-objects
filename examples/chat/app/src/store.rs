@@ -413,7 +413,10 @@ mod tests {
         insert(&db, 100_000, "b");
         assert_eq!(due(), Some(1_000 + delay));
         // The alarm fires, prunes "a", and moves itself to the newest record left.
-        assert_eq!(prune_due(&sql, 1_000 + delay).unwrap(), Some(100_000 + delay));
+        assert_eq!(
+            prune_due(&sql, 1_000 + delay).unwrap(),
+            Some(100_000 + delay)
+        );
         assert_eq!(due(), Some(100_000 + delay));
         assert_eq!(seqs(&db), [2]);
         // Once everything has expired the log is empty and no alarm is pending.

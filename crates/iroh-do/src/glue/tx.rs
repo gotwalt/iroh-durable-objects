@@ -67,6 +67,9 @@ impl TxStorage {
 /// The message of a thrown JavaScript value.
 pub(crate) fn js_text(e: &JsValue) -> String {
     e.as_string()
-        .or_else(|| e.dyn_ref::<js_sys::Error>().map(|e| String::from(e.message())))
+        .or_else(|| {
+            e.dyn_ref::<js_sys::Error>()
+                .map(|e| String::from(e.message()))
+        })
         .unwrap_or_else(|| format!("{e:?}"))
 }

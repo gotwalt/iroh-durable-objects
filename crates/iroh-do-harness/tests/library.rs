@@ -264,8 +264,13 @@ impl App for Flaky {
     }
 
     async fn on_alarm(&self, ctx: &Ctx, alarm: Alarm<'_>) -> Result<(), AlarmError> {
-        ctx.with_sql(|s| s.exec("INSERT INTO runs(attempt) VALUES (?)", &[u64::from(alarm.attempt).into()]))
-            .unwrap_or(Ok(Vec::new()))?;
+        ctx.with_sql(|s| {
+            s.exec(
+                "INSERT INTO runs(attempt) VALUES (?)",
+                &[u64::from(alarm.attempt).into()],
+            )
+        })
+        .unwrap_or(Ok(Vec::new()))?;
         if alarm.attempt < 2 {
             return Err(AlarmError::new("not yet"));
         }
@@ -301,8 +306,15 @@ async fn failed_alarm_work_is_retried() {
         sleep(Duration::from_millis(20)).await;
     }
     // Runs at 0, 200 and 200 + 400 ms.
-    assert!(t0.elapsed() >= Duration::from_millis(600), "{:?}", t0.elapsed());
-    assert_eq!(runs(), [Value::Integer(0), Value::Integer(1), Value::Integer(2)]);
+    assert!(
+        t0.elapsed() >= Duration::from_millis(600),
+        "{:?}",
+        t0.elapsed()
+    );
+    assert_eq!(
+        runs(),
+        [Value::Integer(0), Value::Integer(1), Value::Integer(2)]
+    );
     sleep(Duration::from_millis(50)).await;
     assert!(obj.scheduled().is_empty(), "{:?}", obj.scheduled());
     ep.close().await;

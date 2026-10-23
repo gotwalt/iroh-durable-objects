@@ -228,7 +228,11 @@ fn read<T>(
             Err(Unanswered)
         }
         None => {
-            warn!(event = "chat_sql_failed", what, error = "the object has no database");
+            warn!(
+                event = "chat_sql_failed",
+                what,
+                error = "the object has no database"
+            );
             Err(Unanswered)
         }
     }
@@ -269,7 +273,9 @@ fn handle_request(chat: &Arc<Chat>, peer: EndpointId, line: &str) -> Handled {
             } else {
                 LogKind::Act
             };
-            Ok(store_and_publish(chat, &mut room, None, peer, kind, &me.nick, arg))
+            Ok(store_and_publish(
+                chat, &mut room, None, peer, kind, &me.nick, arg,
+            ))
         }
         "/nick" => match check_nick(chat, peer, arg)? {
             Err(e) => Ok(vec![err(&e)]),
@@ -404,7 +410,8 @@ fn join(
                 nick,
                 joined: true,
             };
-            let stored = store_and_publish(chat, room, Some(&me), peer, LogKind::Join, &me.nick, "");
+            let stored =
+                store_and_publish(chat, room, Some(&me), peer, LogKind::Join, &me.nick, "");
             if is_err(&stored) {
                 return Ok(stored);
             }
@@ -604,7 +611,10 @@ fn spawn_delivery(chat: &Arc<Chat>, peer: EndpointId, task: u64) {
                             e.remove();
                             break;
                         }
-                        (o.lines.drain(..).collect::<Vec<_>>(), std::mem::take(&mut o.dropped))
+                        (
+                            o.lines.drain(..).collect::<Vec<_>>(),
+                            std::mem::take(&mut o.dropped),
+                        )
                     }
                     // Cancelled by `/quit`, or replaced by a later task's outbox.
                     _ => break,
@@ -615,9 +625,25 @@ fn spawn_delivery(chat: &Arc<Chat>, peer: EndpointId, task: u64) {
             let ms = started.elapsed().as_millis() as u64;
             let (peer_z, events) = (peer.to_z32(), lines.len());
             if ok {
-                info!(event = "room_delivery", peer = peer_z, events, dropped, via, ok, ms);
+                info!(
+                    event = "room_delivery",
+                    peer = peer_z,
+                    events,
+                    dropped,
+                    via,
+                    ok,
+                    ms
+                );
             } else {
-                warn!(event = "room_delivery", peer = peer_z, events, dropped, via, ok, ms);
+                warn!(
+                    event = "room_delivery",
+                    peer = peer_z,
+                    events,
+                    dropped,
+                    via,
+                    ok,
+                    ms
+                );
             }
             n.update_stats(|s| {
                 if ok {
