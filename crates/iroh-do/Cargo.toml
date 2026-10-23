@@ -15,6 +15,8 @@ iroh-dns = { version = "=1.4.0", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 data-encoding = "2.6"
+# The admin token is compared by digest (route::token_eq).
+sha2 = "0.11"
 tracing = "0.1"
 # `Targets` filter and span storage only: no `fmt`, no `env-filter` (regex-automata).
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry", "std"] }
@@ -28,6 +30,8 @@ rand_core = { version = "0.10", default-features = false }
 wasm-bindgen = "=0.2.129"
 wasm-bindgen-futures = "=0.4.79"
 js-sys = "=0.3.106"
+# The pkarr requests' timeout, raced against the request.
+n0-future = "0.3"
 
 [dev-dependencies]
 # Runs the schema and checks query plans natively (src/schema.rs).

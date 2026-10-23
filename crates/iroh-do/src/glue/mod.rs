@@ -12,6 +12,7 @@ mod registry;
 mod router;
 mod store;
 mod timers;
+mod tx;
 
 pub use endpoint::Object;
 pub use registry::Registry;

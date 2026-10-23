@@ -153,8 +153,16 @@ pub fn bearer(authorization: Option<&str>) -> Option<&str> {
     scheme.eq_ignore_ascii_case("bearer").then(|| token.trim())
 }
 
-/// Constant-time equality over the full length of both inputs (the length
-/// itself is not secret: tokens are fixed-length random strings).
+/// Whether `given` is the admin token `expected`, in time that depends on neither: their
+/// SHA-256 digests are compared in constant time, so neither the content nor the length of
+/// the token leaks.
+pub fn token_eq(given: &str, expected: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    ct_eq(&Sha256::digest(given), &Sha256::digest(expected))
+}
+
+/// Constant-time equality over the full length of both inputs. The comparison returns early
+/// only on a length mismatch.
 pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -419,6 +427,10 @@ mod tests {
         assert!(ct_eq(b"abc", b"abc"));
         assert!(!ct_eq(b"abc", b"abd"));
         assert!(!ct_eq(b"abc", b"abcd"));
+        assert!(token_eq("secret-token", "secret-token"));
+        assert!(!token_eq("secret-token", "secret-tokem"));
+        assert!(!token_eq("secret", "secret-token"));
+        assert!(!token_eq("", "secret-token"));
     }
 
     #[test]

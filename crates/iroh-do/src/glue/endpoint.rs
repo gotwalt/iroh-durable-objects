@@ -32,7 +32,9 @@ use worker::{
     Env, Request, Response, Result, State, WebSocket, WebSocketIncomingMessage, WebSocketPair,
 };
 
-use iroh_do_core::{APP_KEY_PREFIX, AppEntry, Config as NodeConfig, Node};
+use iroh_do_core::{
+    ALARM_RETRY_BASE, APP_KEY_PREFIX, AppEntry, Config as NodeConfig, Node, alarm_retry_delay,
+};
 
 use super::{
     links,
@@ -43,6 +45,7 @@ use super::{
         MintRequest, MintResponse, NAME_HEADER,
     },
     store::{Due, Identity, Store},
+    tx::TxStorage,
 };
 use crate::pkarr::{REPUBLISH_INTERVAL_MS, RETRY_BASE_MS};
 
@@ -64,8 +67,6 @@ pub const SCHED_REPUBLISH: &str = "republish";
 /// Schedule key for the unauthenticated-socket sweep (handshake deadline).
 /// No `setTimeout`: pending timers would block hibernation.
 pub const SCHED_SWEEP: &str = "sweep";
-/// Delay before a schedule row whose handler failed is retried.
-const ALARM_RETRY_MS: f64 = 30_000.0;
 
 /// Attachment persisted on each hibernatable socket (≤ 16 KiB; this is ~150 B).
 #[derive(Serialize, Deserialize)]
@@ -127,6 +128,8 @@ pub struct Object {
     /// The apps this deployment was built with.
     apps: &'static [AppEntry],
     store: Store,
+    /// `transactionSync`, for the mint.
+    tx: Option<TxStorage>,
     me: RefCell<Option<Me>>,
     /// The stored identity exists but violates the name invariant (§13.4.4).
     refused: Cell<bool>,
@@ -471,12 +474,14 @@ impl Object {
             pkarr_relay: body.pkarr_relay.clone(),
         };
         let t0 = now_ms();
-        self.store.insert_identity(&ident, t0)?;
-        self.store.create_schema((app.schema)())?;
-        self.wakes.set(self.store.bump("wakes")?);
-        self.load();
-        self.ensure_node();
-        let published = self.publish_now().await;
+        if let Err(e) = self.mint_atomically(&ident, &app, t0) {
+            // Nothing was stored: the object is as unminted as before, and the router
+            // passes this status on and does not register the id.
+            error!(event = "mint_failed", endpoint = %id.to_z32(), app = app.name, error = %e);
+            self.forget_identity(&id);
+            return Response::error("mint failed", 503);
+        }
+        let (published, _) = self.publish_now().await;
         self.register(body.label.clone()).await;
         info!(
             event = "mint",
@@ -492,6 +497,45 @@ impl Object {
             relay_url: body.relay_url,
             published,
         })
+    }
+
+    /// Stores the identity, creates the tables, and builds the node and the app, in one
+    /// transaction: if any step fails, or the app's constructor panics, nothing is stored.
+    fn mint_atomically(
+        &self,
+        ident: &Identity,
+        app: &AppEntry,
+        t0: f64,
+    ) -> std::result::Result<(), String> {
+        let Some(tx) = &self.tx else {
+            return Err("no transactionSync on this runtime".into());
+        };
+        tx.transaction(|| {
+            let e = |e: worker::Error| e.to_string();
+            self.store.insert_identity(ident, t0).map_err(e)?;
+            self.store.create_schema((app.schema)()).map_err(e)?;
+            self.wakes.set(self.store.bump("wakes").map_err(e)?);
+            self.load();
+            if self.me.borrow().is_none() {
+                return Err("the stored identity did not load".into());
+            }
+            // `App::new` runs here, so that work it schedules is part of the transaction.
+            self.ensure_node();
+            if self.node.borrow().is_none() {
+                return Err("no node".into());
+            }
+            Ok(())
+        })
+    }
+
+    /// Drops what a failed mint loaded into memory; its storage was rolled back.
+    fn forget_identity(&self, id: &EndpointId) {
+        self.node.borrow_mut().take();
+        self.me.borrow_mut().take();
+        node::unregister(id);
+        links::reset(id);
+        self.refused.set(false);
+        self.wakes.set(0);
     }
 
     /// Destroys this endpoint: closes every socket, drops the node, deletes the
@@ -565,15 +609,18 @@ impl Object {
         register_entry(&self.env, &self.store, &entry, "mint").await;
     }
 
-    /// Publish + confirm, record the outcome, schedule the next attempt.
-    async fn publish_now(&self) -> bool {
+    /// Publish + confirm, record the outcome, schedule the next attempt. Returns whether the
+    /// record was published, and whether the next attempt was scheduled.
+    async fn publish_now(&self) -> (bool, Result<()>) {
         let (secret, relay_url, pkarr_relay) = {
             let me = self.me.borrow();
-            let Some(m) = me.as_ref() else { return false };
+            let Some(m) = me.as_ref() else {
+                return (false, Ok(()));
+            };
             (m.secret.clone(), m.relay_url.clone(), m.pkarr_relay.clone())
         };
         if pkarr_relay.is_empty() {
-            return false;
+            return (false, Ok(()));
         }
         let t0 = now_ms();
         let outcome = pkarr_publish::publish(&secret, &relay_url, &pkarr_relay).await;
@@ -612,10 +659,11 @@ impl Object {
                 next_in_s,
             );
         }
-        if let Err(e) = self.schedule(SCHED_REPUBLISH, next, "").await {
+        let scheduled = self.schedule(SCHED_REPUBLISH, next, "").await;
+        if let Err(e) = &scheduled {
             error!(event = "schedule_failed", endpoint = %self.endpoint(), error = %e);
         }
-        ok
+        (ok, scheduled)
     }
 
     /// Close sockets still unauthenticated past their handshake deadline;
@@ -648,29 +696,62 @@ impl Object {
             .values()
             .filter_map(|s| s.session.handshake_deadline())
             .min();
+        // All remaining deadlines are known here, so this replaces the row, which the alarm
+        // leased to its retry time, rather than keeping the earlier of the two.
         if let Some(d) = next {
-            self.store
-                .schedule_earliest(SCHED_SWEEP, d.as_millis() as f64)?;
+            self.store.schedule(SCHED_SWEEP, d.as_millis() as f64, "")?;
         }
         Ok(())
     }
 
-    /// Claim one due schedule row and run it.
-    async fn run_due(&self, d: &Due) -> Result<()> {
-        self.store.claim(d)?;
+    /// Runs the library's work of one leased schedule row.
+    async fn run_due(&self, d: &Due, _attempt: u32) -> std::result::Result<(), String> {
         if d.key == SCHED_REPUBLISH {
-            self.publish_now().await;
+            // A failed publish schedules its own retry; only failing to schedule it fails.
+            self.publish_now().await.1.map_err(|e| e.to_string())
         } else if d.key == SCHED_SWEEP {
-            self.sweep_unauthenticated()?;
-        } else if d.key.starts_with(APP_KEY_PREFIX) {
-            self.ensure_node();
-            if let Some(node) = self.node.borrow().as_ref() {
-                node.alarm(&d.key, &d.payload);
-            }
+            self.sweep_unauthenticated().map_err(|e| e.to_string())
         } else {
             warn!(event = "bad_schedule_key", key = %d.key);
+            Ok(())
         }
-        Ok(())
+    }
+
+    /// Runs the app's work of the leased row `d` in a task, which deletes the row once the
+    /// work succeeded and re-arms the alarm. The endpoint stays bound while it runs.
+    fn spawn_app_alarm(&self, d: &Due, attempt: u32) {
+        self.ensure_node();
+        let Some(node) = self.node.borrow().clone() else {
+            return;
+        };
+        let (store, storage, endpoint) = (self.store.clone(), self.state.storage(), self.endpoint());
+        let d = Due {
+            key: d.key.clone(),
+            due_ms: d.due_ms,
+            payload: d.payload.clone(),
+            attempt: d.attempt,
+        };
+        wasm_bindgen_futures::spawn_local(async move {
+            let t0 = now_ms();
+            let res = match node.alarm(&d.key, &d.payload, attempt).await {
+                Ok(()) => store.claim(&d).map_err(|e| format!("claim: {e}")),
+                Err(e) => Err(e.to_string()),
+            };
+            match res {
+                Ok(()) => info!(event = "alarm_app", endpoint, attempt, ok = true, ms = now_ms() - t0),
+                Err(e) => error!(
+                    event = "alarm_entry_failed",
+                    endpoint,
+                    key = "app",
+                    attempt,
+                    retry_in_s = ((d.due_ms - now_ms()) / 1000.0).round(),
+                    error = %e,
+                ),
+            }
+            if let Err(e) = node::rearm(&store, &storage).await {
+                error!(event = "set_alarm_failed", error = %e);
+            }
+        });
     }
 
     /// Schedule the unauthenticated-socket sweep (earliest wins) and arm the alarm.
@@ -686,15 +767,7 @@ impl Object {
     }
 
     async fn rearm(&self) -> Result<()> {
-        match self.store.next_due()? {
-            Some(due) => {
-                self.state
-                    .storage()
-                    .set_alarm(at_ms(due.max(now_ms())))
-                    .await
-            }
-            None => Ok(()),
-        }
+        node::rearm(&self.store, &self.state.storage()).await
     }
 }
 
@@ -704,10 +777,12 @@ impl Object {
         super::logging::install(&env);
         super::timers::install();
         let store = Store::new(state.storage().sql());
+        let tx = TxStorage::of(&state);
         let this = Self {
             state,
             env,
             apps,
+            tx,
             store,
             me: RefCell::new(None),
             refused: Cell::new(false),
@@ -732,6 +807,7 @@ impl Object {
                     error!(event = "wakes_bump_failed", endpoint = %this.endpoint(), error = %e)
                 }
             }
+            this.note_evicted_active();
         }
         let (restored, closed) = this.restore_sessions();
         this.ensure_node();
@@ -923,63 +999,87 @@ impl Object {
     }
 
     /// The class's `alarm`.
+    ///
+    /// Before any work runs, each due row is leased: moved to its retry time, with its attempt
+    /// counted, and the alarm is armed for the result. A row is deleted only once its work has
+    /// succeeded. Work that fails, and work cut short by a trap or an eviction, therefore runs
+    /// again after [`alarm_retry_delay`], and the rows after it are not lost with it.
+    ///
+    /// The library's own work runs inside the handler. The app's runs in tasks started as the
+    /// handler returns: workers-rs leaves the promise of a handler whose instance traps
+    /// unsettled, and the runtime delivers no further alarm while one is unsettled, so app
+    /// work that panicked inside the handler would never be retried
+    /// (`tests/workerd/fault-test.mjs`).
     pub async fn alarm(&self) -> Result<Response> {
         if self.refused.get() || self.me.borrow().is_none() {
+            // No work can be stored without an identity. The alarm of a mint that rolled back,
+            // or of a refused object, is dropped; that writes nothing.
+            self.state.storage().delete_alarm().await?;
             return Response::ok("refused");
         }
-        // Each row stays in the table until it is claimed immediately before it
-        // runs. A row whose handler returns an error is logged and rescheduled,
-        // and the remaining rows still run.
         let t0 = now_ms();
-        let due = self.store.due(t0)?;
+        let mut leased = Vec::new();
+        for d in self.store.due(t0)? {
+            let retry =
+                now_ms() + alarm_retry_delay(ALARM_RETRY_BASE, d.attempt).as_millis() as f64;
+            // An error here makes the runtime retry the alarm; every row is still stored.
+            if let Some(l) = self.store.lease(&d, retry)? {
+                leased.push((d.attempt, l));
+            }
+        }
+        self.rearm().await?;
         let mut failed = 0;
-        for d in &due {
-            if let Err(e) = self.run_due(d).await {
+        for (attempt, d) in &leased {
+            if d.key.starts_with(APP_KEY_PREFIX) {
+                continue;
+            }
+            let res = match self.run_due(d, *attempt).await {
+                Ok(()) => self.store.claim(d).map_err(|e| format!("claim: {e}")),
+                Err(e) => Err(e),
+            };
+            if let Err(e) = res {
                 failed += 1;
                 error!(
                     event = "alarm_entry_failed",
                     endpoint = %self.endpoint(),
-                    key = %d.key,
+                    key = kind(&d.key),
+                    attempt,
+                    retry_in_s = ((d.due_ms - now_ms()) / 1000.0).round(),
                     error = %e,
                 );
-                let retry = now_ms() + ALARM_RETRY_MS;
-                if let Err(e) = self.store.schedule_earliest(&d.key, retry) {
-                    error!(event = "schedule_failed", endpoint = %self.endpoint(), error = %e);
-                }
             }
         }
-        // Kinds, not keys: an app key may carry a peer's EndpointId.
-        let kinds = due
+        let kinds = leased
             .iter()
-            .map(|d| {
-                if d.key.starts_with(APP_KEY_PREFIX) {
-                    "app"
-                } else {
-                    d.key.as_str()
-                }
-            })
+            .map(|(_, d)| kind(&d.key))
             .collect::<Vec<_>>()
             .join(",");
         info!(
             event = "alarm",
             endpoint = %self.endpoint(),
             due = kinds,
-            ran = due.len(),
+            ran = leased.len(),
             failed,
             ms = now_ms() - t0,
         );
-        // Republishing must never stop: if no row survived (e.g. its write
-        // failed inside publish_now), put one back.
-        if !self.store.scheduled(SCHED_REPUBLISH).unwrap_or(true)
-            && let Err(e) = self
-                .store
-                .schedule(SCHED_REPUBLISH, now_ms() + ALARM_RETRY_MS, "")
-        {
-            error!(event = "schedule_failed", endpoint = %self.endpoint(), error = %e);
-        }
-        // An error here makes the runtime retry the alarm; every row is still stored.
         self.rearm().await?;
+        // Last, with nothing awaited after it: the tasks first run once this handler has
+        // returned, so that a trap in them cannot leave the alarm event unsettled.
+        for (attempt, d) in &leased {
+            if d.key.starts_with(APP_KEY_PREFIX) {
+                self.spawn_app_alarm(d, *attempt);
+            }
+        }
         Response::ok("ok")
+    }
+}
+
+/// A schedule key for logs: an app's key may carry a peer's EndpointId, so app work is `app`.
+fn kind(key: &str) -> &str {
+    if key.starts_with(APP_KEY_PREFIX) {
+        "app"
+    } else {
+        key
     }
 }
 
@@ -1036,6 +1136,28 @@ impl Object {
         });
     }
 
+    /// Logs `evicted_active` if the previous instance ended while its `Endpoint` was bound:
+    /// evicted, crashed or trapped with QUIC connections that its peers now wait out
+    /// (`docs/design.md`, Failure handling). A constructor runs before any `Endpoint`, so
+    /// the marker it finds is always the previous instance's.
+    fn note_evicted_active(&self) {
+        match self.store.counter_opt(node::COUNTER_BOUND_AT) {
+            Ok(Some(at)) => {
+                warn!(
+                    event = "evicted_active",
+                    endpoint = %self.endpoint(),
+                    since_bind_ms = now_ms() as i64 - at,
+                    wakes = self.wakes.get(),
+                );
+                if let Err(e) = self.store.delete_counter(node::COUNTER_BOUND_AT) {
+                    error!(event = "bound_marker_failed", endpoint = %self.endpoint(), error = %e);
+                }
+            }
+            Ok(None) => {}
+            Err(e) => error!(event = "bound_marker_failed", endpoint = %self.endpoint(), error = %e),
+        }
+    }
+
     /// Creates the node once an identity is loaded. Cheap: no `Endpoint` is
     /// bound until the first datagram or dial-back.
     fn ensure_node(&self) {
@@ -1044,7 +1166,12 @@ impl Object {
         }
         let me = self.me.borrow();
         let Some(me) = me.as_ref() else { return };
-        node::register(me.id, self.store.clone(), self.state.storage());
+        node::register(
+            me.id,
+            self.store.clone(),
+            self.state.storage(),
+            TxStorage::of(&self.state),
+        );
         let bundle = self
             .env
             .var("BUNDLE_SHA256")

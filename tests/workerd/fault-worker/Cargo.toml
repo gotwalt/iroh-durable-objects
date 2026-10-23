@@ -1,0 +1,21 @@
+[package]
+name = "iroh-do-fault-worker"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Test deployment for tests/workerd/fault-test.mjs: the echo app and apps that fail on purpose"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+iroh-do = { path = "../../../crates/iroh-do" }
+iroh-do-echo = { path = "../../../examples/echo/app" }
+iroh = { workspace = true }
+
+# `worker!` expands to workers-rs macros, which name these crates by absolute path.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+worker = { workspace = true }
+wasm-bindgen = "=0.2.129"

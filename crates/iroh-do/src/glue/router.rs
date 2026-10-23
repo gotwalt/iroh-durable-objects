@@ -77,6 +77,10 @@ fn var(env: &Env, name: &str) -> Option<String> {
 }
 
 /// The Worker's `fetch` handler, for a deployment built with `apps`.
+///
+/// Every request gets a response. A binding, a Durable Object or the registry that fails,
+/// including an object whose instance traps, is answered with 503 rather than surfacing as an
+/// exception of the Worker.
 pub async fn handle(req: Request, env: Env, apps: &'static [AppEntry]) -> Result<Response> {
     super::logging::install(&env);
     super::timers::install();
@@ -84,6 +88,23 @@ pub async fn handle(req: Request, env: Env, apps: &'static [AppEntry]) -> Result
         error!(event = "config_error", missing = "ZONE_SUFFIX");
         return Response::error("misconfigured", 500);
     };
+    let path = req.path();
+    match route_request(req, &env, &zone, apps).await {
+        Ok(resp) => Ok(resp),
+        Err(e) => {
+            error!(event = "router_error", path = %path, error = %e);
+            Response::error("unavailable", 503)
+        }
+    }
+}
+
+async fn route_request(
+    req: Request,
+    env: &Env,
+    zone: &str,
+    apps: &'static [AppEntry],
+) -> Result<Response> {
+    let env = env.clone();
     let headers = req.headers();
     // The request URL's host is authoritative (workerd derives it from Host;
     // Miniflare's dispatchFetch only preserves it in the URL).
@@ -96,7 +117,7 @@ pub async fn handle(req: Request, env: Env, apps: &'static [AppEntry]) -> Result
         &method,
         &path,
         route::is_websocket_upgrade(upgrade.as_deref()),
-        &zone,
+        zone,
     ) {
         Route::Relay(id) => {
             let stub = env
@@ -105,7 +126,7 @@ pub async fn handle(req: Request, env: Env, apps: &'static [AppEntry]) -> Result
                 .get_stub()?;
             stub.fetch_with_request(req).await
         }
-        Route::Mint => mint(req, &env, &zone, apps).await,
+        Route::Mint => mint(req, &env, zone, apps).await,
         Route::Destroy(id) => destroy(req, &env, &id.to_z32()).await,
         Route::ListPage => {
             let hint = |app: &str, id: &str| {
@@ -157,8 +178,7 @@ fn admin_auth(req: &Request, env: &Env) -> Result<Option<Response>> {
         return Ok(Some(Response::error("admin disabled", 503)?));
     };
     let auth = req.headers().get("authorization")?;
-    let ok = route::bearer(auth.as_deref())
-        .is_some_and(|t| route::ct_eq(t.as_bytes(), expected.as_bytes()));
+    let ok = route::bearer(auth.as_deref()).is_some_and(|t| route::token_eq(t, &expected));
     if !ok {
         warn!(event = "admin_auth", ok = false, path = %req.path());
         return Ok(Some(Response::error("unauthorized", 401)?));

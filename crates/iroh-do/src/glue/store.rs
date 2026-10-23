@@ -62,10 +62,13 @@ struct ValueRow {
 pub struct Due {
     /// Entry key (`republish`, `sweep`, or an app key).
     pub key: String,
-    /// Due time the entry was read with; [`Store::claim`] removes only this version.
+    /// Due time the entry was read with; [`Store::lease`] and [`Store::claim`] act only on
+    /// this version.
     pub due_ms: f64,
     /// The payload the entry was scheduled with.
     pub payload: String,
+    /// Runs of this entry that did not complete.
+    pub attempt: u32,
 }
 
 #[derive(Deserialize)]
@@ -211,11 +214,10 @@ impl Store {
         Ok(rows.first().map_or(0, |r| r.value))
     }
 
-    /// Upsert a schedule entry.
+    /// Upsert a schedule entry; its attempt count starts over.
     pub fn schedule(&self, key: &str, due_ms: f64, payload: &str) -> Result<()> {
         self.sql.exec(
-            "INSERT INTO schedule(key, due_ms, payload) VALUES (?, ?, ?)
-             ON CONFLICT(key) DO UPDATE SET due_ms = excluded.due_ms, payload = excluded.payload",
+            schema::SCHEDULE_UPSERT,
             vec![key.into(), due_ms.into(), payload.into()],
         )?;
         Ok(())
@@ -223,30 +225,45 @@ impl Store {
 
     /// Upsert an entry, keeping the earlier due time if one exists.
     pub fn schedule_earliest(&self, key: &str, due_ms: f64) -> Result<()> {
-        self.sql.exec(
-            "INSERT INTO schedule(key, due_ms, payload) VALUES (?, ?, '')
-             ON CONFLICT(key) DO UPDATE SET due_ms = min(due_ms, excluded.due_ms)",
-            vec![key.into(), due_ms.into()],
-        )?;
+        self.sql
+            .exec(schema::SCHEDULE_EARLIEST, vec![key.into(), due_ms.into()])?;
         Ok(())
     }
 
-    /// Entries due at or before `now_ms`, left in place: each is removed by
-    /// [`Store::claim`] just before it runs, so a failure part-way loses nothing.
+    /// Entries due at or before `now_ms`, left in place: [`Store::lease`] moves each to its
+    /// retry time before it runs, and [`Store::claim`] removes it after it succeeded.
     pub fn due(&self, now_ms: f64) -> Result<Vec<Due>> {
         self.sql
             .exec(
-                "SELECT key, due_ms, payload FROM schedule WHERE due_ms <= ? ORDER BY due_ms",
+                schema::SCHEDULE_DUE,
                 vec![SqlStorageValue::Float(now_ms)],
             )?
             .to_array()
     }
 
-    /// Remove `d` if it is still the version that was read (a handler may have
-    /// rescheduled the key since).
+    /// Moves `d` to `retry_ms` and counts the attempt, so that it runs again if this run
+    /// fails or never completes. Returns the leased entry, `None` if `d` changed since it
+    /// was read.
+    pub fn lease(&self, d: &Due, retry_ms: f64) -> Result<Option<Due>> {
+        let rows: Vec<Due> = self
+            .sql
+            .exec(
+                schema::SCHEDULE_LEASE,
+                vec![
+                    SqlStorageValue::Float(retry_ms),
+                    d.key.as_str().into(),
+                    SqlStorageValue::Float(d.due_ms),
+                ],
+            )?
+            .to_array()?;
+        Ok(rows.into_iter().next())
+    }
+
+    /// Removes the leased entry `d` after its work succeeded, unless it was scheduled again
+    /// meanwhile.
     pub fn claim(&self, d: &Due) -> Result<()> {
         self.sql.exec(
-            "DELETE FROM schedule WHERE key = ? AND due_ms = ?",
+            schema::SCHEDULE_CLAIM,
             vec![d.key.as_str().into(), SqlStorageValue::Float(d.due_ms)],
         )?;
         Ok(())
@@ -259,18 +276,6 @@ impl Store {
         Ok(())
     }
 
-    /// Whether an entry exists for `key`.
-    pub fn scheduled(&self, key: &str) -> Result<bool> {
-        let rows: Vec<ValueRow> = self
-            .sql
-            .exec(
-                "SELECT count(*) AS value FROM schedule WHERE key = ?",
-                vec![key.into()],
-            )?
-            .to_array()?;
-        Ok(rows.first().is_some_and(|r| r.value > 0))
-    }
-
     /// Earliest pending entry.
     pub fn next_due(&self) -> Result<Option<f64>> {
         let rows: Vec<MinRow> = self
@@ -278,6 +283,35 @@ impl Store {
             .exec("SELECT min(due_ms) AS due FROM schedule", None)?
             .to_array()?;
         Ok(rows.first().and_then(|r| r.due))
+    }
+
+    /// Sets counter `name` to `value`.
+    pub fn set_counter(&self, name: &str, value: i64) -> Result<()> {
+        self.sql.exec(
+            "INSERT INTO counters(name, value) VALUES (?, ?)
+             ON CONFLICT(name) DO UPDATE SET value = excluded.value",
+            vec![name.into(), SqlStorageValue::Integer(value)],
+        )?;
+        Ok(())
+    }
+
+    /// Reads counter `name`, `None` if it is unset.
+    pub fn counter_opt(&self, name: &str) -> Result<Option<i64>> {
+        let rows: Vec<ValueRow> = self
+            .sql
+            .exec(
+                "SELECT value FROM counters WHERE name = ?",
+                vec![name.into()],
+            )?
+            .to_array()?;
+        Ok(rows.first().map(|r| r.value))
+    }
+
+    /// Deletes counter `name`.
+    pub fn delete_counter(&self, name: &str) -> Result<()> {
+        self.sql
+            .exec("DELETE FROM counters WHERE name = ?", vec![name.into()])?;
+        Ok(())
     }
 
     /// Record the outcome of a pkarr publish attempt; returns consecutive failures.
