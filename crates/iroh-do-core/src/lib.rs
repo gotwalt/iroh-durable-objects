@@ -95,7 +95,7 @@ use tracing::{Instrument, Span, debug, error, info, info_span, warn};
 
 use crate::{app::Registered, conn::Activity as ConnActivity};
 pub use crate::{
-    app::{App, AppEntry, DynApp, Idle, LocalProtocolHandler, Protocols},
+    app::{App, AppEntry, DynApp, Idle, Protocols},
     conn::{Activity, CLOSE_OK, StreamGuard},
     ctx::{APP_KEY_PREFIX, ConnectError, Ctx},
     sql::{Row, Sql, SqlError, Value},

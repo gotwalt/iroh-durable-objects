@@ -15,9 +15,9 @@
 //! stream open (counted by [`Activity::stream`] guards) is closed only after
 //! [`Config::t_silent`](crate::Config::t_silent).
 //!
-//! When the connection closes, its guards stop counting. A guard owned by a garbage-collected
-//! host (a JavaScript stream object) can outlive its connection by an unspecified time, and
-//! must not be counted as an open stream after the connection is gone.
+//! When the connection closes, its guards stop counting. A guard held by a task that has not
+//! yet noticed the close, or by any value that outlives the connection, must not be counted
+//! as an open stream after the connection is gone.
 
 use std::{
     sync::{
@@ -290,8 +290,8 @@ mod tests {
         a.release();
         assert_eq!(node.load(Ordering::SeqCst), 0);
         assert_eq!(a.close_deadline(IDLE, SILENT).1, "idle");
-        // A guard held past the close, as a JavaScript stream object may be, must not
-        // underflow the node count when it is finally dropped.
+        // A guard held past the close must not underflow the node count when it is finally
+        // dropped.
         drop(g2);
         assert_eq!(node.load(Ordering::SeqCst), 0);
         let g3 = a.stream();
