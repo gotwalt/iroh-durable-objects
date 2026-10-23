@@ -95,7 +95,10 @@ use tracing::{Instrument, Span, debug, error, info, info_span, warn};
 
 use crate::{app::Registered, conn::Activity as ConnActivity};
 pub use crate::{
-    app::{App, AppEntry, DynApp, Idle, Protocols},
+    app::{
+        ALARM_RETRY_BASE, ALARM_RETRY_MAX, Alarm, AlarmError, App, AppEntry, DynApp, Idle,
+        Protocols, alarm_retry_delay,
+    },
     conn::{Activity, CLOSE_OK, StreamGuard},
     ctx::{APP_KEY_PREFIX, ConnectError, Ctx},
     sql::{Row, Sql, SqlError, Value},
@@ -185,6 +188,10 @@ pub trait Host: FrameSink {
     /// Persists work under `key`, due after `delay`, replacing any pending work with the same
     /// key, and arms an alarm. When it is due the host calls [`Node::alarm`] with `key` and
     /// `payload`, possibly on a new node created after hibernation.
+    ///
+    /// The host deletes the work once [`Node::alarm`] returns `Ok`, unless it was scheduled
+    /// again meanwhile. Until then it keeps it, and runs it again after
+    /// [`alarm_retry_delay`] if the run fails or does not complete.
     fn schedule(&self, key: &str, delay: Duration, payload: &str);
 
     /// Deletes pending work under `key`.
@@ -193,6 +200,15 @@ pub trait Host: FrameSink {
     /// Calls `f` with the object's database, or does not call it if the object has none
     /// any more.
     fn with_sql(&self, f: &mut dyn FnMut(&dyn Sql));
+
+    /// Calls `f` with the object's database inside a transaction: what `f` writes is
+    /// committed if it returns `Ok`, and rolled back if it returns an error or the commit
+    /// fails. Returns `f`'s error or the commit's, or `None`, without calling `f`, if the
+    /// object has no database any more.
+    fn transaction(
+        &self,
+        f: &mut dyn FnMut(&dyn Sql) -> Result<(), SqlError>,
+    ) -> Option<Result<(), SqlError>>;
 
     /// Called each time the node has bound an endpoint, after the state is Active.
     ///
@@ -433,19 +449,33 @@ impl Node {
         self.shared.activate_locked(&mut inner);
     }
 
-    /// Runs work scheduled through [`Host::schedule`] that is now due.
+    /// Runs work scheduled through [`Host::schedule`] that is now due, and completes when the
+    /// app's [`App::on_alarm`] does. `attempt` counts the earlier runs of this work that did
+    /// not complete.
+    ///
+    /// The host deletes the work only after `Ok`; it keeps it for a later run until then, so
+    /// that an error, an eviction or a panic during the run loses nothing.
     ///
     /// Keys the node gave the host for the app carry [`APP_KEY_PREFIX`]; the app sees them
-    /// without it. Other keys are ignored.
-    pub fn alarm(&self, key: &str, payload: &str) {
-        let _span = self.shared.span.enter();
+    /// without it. Other keys are ignored and succeed.
+    pub async fn alarm(&self, key: &str, payload: &str, attempt: u32) -> Result<(), AlarmError> {
         let Some(key) = key.strip_prefix(APP_KEY_PREFIX) else {
-            warn!(key, "alarm for a key the node did not schedule");
-            return;
+            warn!(parent: &self.shared.span, key, "alarm for a key the node did not schedule");
+            return Ok(());
         };
-        if let Some(app) = self.shared.app.get() {
-            app.on_alarm(&self.shared.ctx, key, payload);
-        }
+        let Some(app) = self.shared.app.get().cloned() else {
+            return Ok(());
+        };
+        // The endpoint stays bound while the work runs, as for a task from `Ctx::spawn`.
+        let _busy = self.shared.busy();
+        let alarm = Alarm {
+            key,
+            payload,
+            attempt,
+        };
+        app.on_alarm(&self.shared.ctx, alarm)
+            .instrument(self.shared.span.clone())
+            .await
     }
 
     /// Returns the current lifecycle state.

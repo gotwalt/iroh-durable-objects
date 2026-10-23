@@ -8,7 +8,7 @@ use iroh::{
     endpoint::{Connection, ConnectionError, presets},
     protocol::{AcceptError, ProtocolHandler},
 };
-use iroh_do_core::{App, ConnectError, Ctx, Protocols};
+use iroh_do_core::{Alarm, AlarmError, App, ConnectError, Ctx, Protocols, Value};
 use iroh_do_harness::{DoObject, Harness, State, Timings};
 use tokio::time::{Instant, sleep, timeout};
 
@@ -230,25 +230,82 @@ impl App for CallBack {
         p.accept(ASK, Ask(ctx.clone()));
     }
 
-    fn on_alarm(&self, ctx: &Ctx, key: &str, _payload: &str) {
-        let Some(peer) = key
+    async fn on_alarm(&self, ctx: &Ctx, alarm: Alarm<'_>) -> Result<(), AlarmError> {
+        let Some(peer) = alarm
+            .key
             .strip_prefix("back:")
             .and_then(|z| iroh::EndpointId::from_z32(z).ok())
         else {
-            return;
+            return Ok(());
         };
-        let ctx2 = ctx.clone();
-        ctx.spawn(async move {
-            let Ok(conn) = ctx2.connect(peer, BACK).await else {
-                return;
-            };
-            if let Ok(mut s) = conn.open_uni().await {
-                let _ = s.write_all(b"back").await;
-                let _ = s.finish();
-            }
-            conn.closed().await;
-        });
+        let conn = ctx.connect(peer, BACK).await.map_err(AlarmError::new)?;
+        let mut s = conn.open_uni().await.map_err(AlarmError::new)?;
+        s.write_all(b"back").await.map_err(AlarmError::new)?;
+        s.finish().map_err(AlarmError::new)?;
+        conn.closed().await;
+        Ok(())
     }
+}
+
+/// Alarm work that fails its first two runs, recording every run's attempt number.
+struct Flaky;
+
+impl App for Flaky {
+    const NAME: &'static str = "flaky";
+
+    fn new(_ctx: &Ctx) -> Self {
+        Flaky
+    }
+
+    fn protocols(&self, _ctx: &Ctx, _p: &mut Protocols) {}
+
+    fn schema() -> &'static [&'static str] {
+        &["CREATE TABLE IF NOT EXISTS runs(attempt INTEGER NOT NULL)"]
+    }
+
+    async fn on_alarm(&self, ctx: &Ctx, alarm: Alarm<'_>) -> Result<(), AlarmError> {
+        ctx.with_sql(|s| s.exec("INSERT INTO runs(attempt) VALUES (?)", &[u64::from(alarm.attempt).into()]))
+            .unwrap_or(Ok(Vec::new()))?;
+        if alarm.attempt < 2 {
+            return Err(AlarmError::new("not yet"));
+        }
+        Ok(())
+    }
+}
+
+/// Alarm work that fails stays scheduled and runs again after the retry delay, doubled per
+/// failure, with its attempt count; it is deleted once a run succeeds.
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_alarm_work_is_retried() {
+    let h = Harness::start().await.unwrap();
+    let timings = Timings {
+        alarm_retry: Duration::from_millis(200),
+        ..Timings::default()
+    };
+    let obj = h.mint::<Flaky>(timings);
+    // The node exists once a socket has authenticated; any peer's will do.
+    let ep = peer(vec![]).await;
+    let conn = ep.connect(addr(&h, &obj), ASK).await;
+    assert!(conn.is_err(), "the app accepts no ALPN");
+    let t0 = Instant::now();
+    obj.node().unwrap().ctx().schedule("w", Duration::ZERO, "");
+    let runs = || {
+        obj.with_sql(|s| s.exec("SELECT attempt FROM runs ORDER BY rowid", &[]))
+            .unwrap()
+            .into_iter()
+            .map(|r| r[0].clone())
+            .collect::<Vec<_>>()
+    };
+    while runs().len() < 3 {
+        assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", runs());
+        sleep(Duration::from_millis(20)).await;
+    }
+    // Runs at 0, 200 and 200 + 400 ms.
+    assert!(t0.elapsed() >= Duration::from_millis(600), "{:?}", t0.elapsed());
+    assert_eq!(runs(), [Value::Integer(0), Value::Integer(1), Value::Integer(2)]);
+    sleep(Duration::from_millis(50)).await;
+    assert!(obj.scheduled().is_empty(), "{:?}", obj.scheduled());
+    ep.close().await;
 }
 
 /// Work scheduled through `Ctx` runs from the alarm on an object that hibernated in between,

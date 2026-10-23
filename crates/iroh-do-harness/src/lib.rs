@@ -68,6 +68,9 @@ pub struct Timings {
     pub t_linger: Duration,
     /// See [`Config::max_idle_timeout`].
     pub max_idle_timeout: Duration,
+    /// Delay before failed alarm work runs again the first time; it doubles with each
+    /// further failure ([`iroh_do_core::alarm_retry_delay`]).
+    pub alarm_retry: Duration,
 }
 
 impl Default for Timings {
@@ -77,6 +80,7 @@ impl Default for Timings {
             t_silent: Config::DEFAULT_T_SILENT,
             t_linger: Config::DEFAULT_T_LINGER,
             max_idle_timeout: Config::DEFAULT_MAX_IDLE_TIMEOUT,
+            alarm_retry: iroh_do_core::ALARM_RETRY_BASE,
         }
     }
 }
@@ -184,6 +188,15 @@ struct Socket {
     attachment: Option<SessionSnapshot>,
 }
 
+/// Work scheduled by the node, as the `schedule` table holds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Work {
+    due: Instant,
+    payload: String,
+    /// Runs that did not complete.
+    attempt: u32,
+}
+
 /// In-memory object state, dropped on hibernation and eviction.
 struct Live {
     node: Node,
@@ -201,8 +214,8 @@ pub struct DoObject {
     timings: Timings,
     wakes: AtomicU64,
     endpoint_builds: AtomicU64,
-    /// Scheduled work by key: due time and payload.
-    schedule: Mutex<HashMap<String, (Instant, String)>>,
+    /// Scheduled work by key.
+    schedule: Mutex<HashMap<String, Work>>,
     db: Mutex<rusqlite::Connection>,
     // Runtime state.
     sockets: Mutex<HashMap<u64, Socket>>,
@@ -249,6 +262,13 @@ impl DoObject {
     /// node state the host read back from inside the call.
     pub fn bind_callbacks(&self) -> Vec<(&'static str, State)> {
         lock(&self.bind_callbacks).clone()
+    }
+
+    /// Returns the keys of the scheduled work, sorted.
+    pub fn scheduled(&self) -> Vec<String> {
+        let mut keys: Vec<String> = lock(&self.schedule).keys().cloned().collect();
+        keys.sort();
+        keys
     }
 
     /// Returns the number of sockets the runtime holds.
@@ -485,30 +505,53 @@ impl DoObject {
         l.node.socket_closed(peer);
     }
 
-    /// The alarm handler: runs every due entry.
-    fn alarm(&self) {
-        let due: Vec<(String, String)> = {
+    /// Fires the alarm after `delay`.
+    fn arm(&self, delay: Duration) {
+        let weak = self.me.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            if let Some(obj) = weak.upgrade() {
+                obj.alarm().await;
+            }
+        });
+    }
+
+    /// The alarm handler, as the Durable Object runs it: each due entry is leased (moved to
+    /// its retry time, its attempt counted) before its work runs, and deleted only after the
+    /// work succeeded and if it was not scheduled again meanwhile.
+    async fn alarm(&self) {
+        let leased: Vec<(String, Work, u32)> = {
             let mut sched = lock(&self.schedule);
             let now = Instant::now();
-            let keys: Vec<String> = sched
-                .iter()
-                .filter(|(_, (at, _))| *at <= now)
-                .map(|(k, _)| k.clone())
-                .collect();
-            keys.into_iter()
-                .filter_map(|k| sched.remove(&k).map(|(_, p)| (k, p)))
-                .collect()
+            let mut leased = Vec::new();
+            for (key, work) in sched.iter_mut().filter(|(_, w)| w.due <= now) {
+                let attempt = work.attempt;
+                let retry = iroh_do_core::alarm_retry_delay(self.timings.alarm_retry, attempt);
+                work.due = now + retry;
+                work.attempt += 1;
+                leased.push((key.clone(), work.clone(), attempt));
+                self.arm(retry);
+            }
+            leased
         };
-        if due.is_empty() {
+        if leased.is_empty() {
             return;
         }
         let node = {
             let mut live = lock(&self.live);
             self.ensure_live(&mut live).node.clone()
         };
-        for (key, payload) in due {
-            info!(key, "alarm");
-            node.alarm(&key, &payload);
+        for (key, work, attempt) in leased {
+            info!(key, attempt, "alarm");
+            match node.alarm(&key, &work.payload, attempt).await {
+                Ok(()) => {
+                    let mut sched = lock(&self.schedule);
+                    if sched.get(&key) == Some(&work) {
+                        sched.remove(&key);
+                    }
+                }
+                Err(e) => info!(key, attempt, %e, "alarm work failed"),
+            }
         }
     }
 }
@@ -601,6 +644,21 @@ impl Host for HostImpl {
         }
     }
 
+    fn transaction(
+        &self,
+        f: &mut dyn FnMut(&dyn Sql) -> Result<(), SqlError>,
+    ) -> Option<Result<(), SqlError>> {
+        let obj = self.object.upgrade()?;
+        let db = lock(&obj.db);
+        let err = |e: rusqlite::Error| SqlError(e.to_string());
+        let res = (|| {
+            let tx = db.unchecked_transaction().map_err(err)?;
+            f(&RusqliteSql(&tx))?;
+            tx.commit().map_err(err)
+        })();
+        Some(res)
+    }
+
     fn endpoint_built(&self) {
         if let Some(obj) = self.object.upgrade() {
             obj.endpoint_builds.fetch_add(1, Ordering::SeqCst);
@@ -625,15 +683,13 @@ impl Host for HostImpl {
         };
         lock(&obj.schedule).insert(
             key.to_string(),
-            (Instant::now() + delay, payload.to_string()),
+            Work {
+                due: Instant::now() + delay,
+                payload: payload.to_string(),
+                attempt: 0,
+            },
         );
-        let weak = self.object.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(delay).await;
-            if let Some(obj) = weak.upgrade() {
-                obj.alarm();
-            }
-        });
+        obj.arm(delay);
     }
 
     fn cancel(&self, key: &str) {

@@ -175,9 +175,10 @@ with no node tasks, as a Durable Object must be to hibernate.
 - `obj.node()` (status, stats, `ctx()`), `obj.state()`, `obj.wakes()`.
 
 The same file has a test app, `CallBack`, that uses `Ctx::schedule`,
-`App::on_alarm`, `Ctx::spawn` and `Ctx::connect` to dial a peer back after
-hibernation. `cargo test -p iroh-do-harness --test library` ran its 4 tests in
-6.16 s on 2026-10-22.
+`App::on_alarm` and `Ctx::connect` to dial a peer back after hibernation, and
+`Flaky`, whose alarm work fails twice before it succeeds.
+`cargo test -p iroh-do-harness --test library` ran its 7 tests in 6.24 s on
+2026-10-22.
 
 ## 3. Running it locally on workerd
 
@@ -277,24 +278,34 @@ knows about:
 
 - **Later work:** `Ctx::schedule(key, delay, payload)` persists the work and
   arms the object's alarm. When due, the object (possibly a new construction,
-  after hibernation) calls `App::on_alarm(ctx, key, payload)`. A second
-  `schedule` with the same key replaces the first; `Ctx::cancel(key)` deletes
-  it. Keys are prefixed with `app:` (`APP_KEY_PREFIX`) before storage, so they
-  cannot collide with the library's own (`republish`, `sweep`); `on_alarm`
-  receives the key without the prefix.
-- **Async work:** `on_alarm` is synchronous. Start async work with
-  `Ctx::spawn(fut)`. The node counts the task: the endpoint stays bound while
+  after hibernation) awaits `App::on_alarm(ctx, alarm)`, where `alarm` holds
+  the key, the payload and `attempt`, the number of earlier runs that did not
+  complete. A second `schedule` with the same key replaces the first;
+  `Ctx::cancel(key)` deletes it. Keys are prefixed with `app:`
+  (`APP_KEY_PREFIX`) before storage, so they cannot collide with the
+  library's own (`republish`, `sweep`); `on_alarm` receives the key without
+  the prefix.
+- **Alarm work runs at least once.** The object keeps the work until
+  `on_alarm`'s future returns `Ok`. If it returns an error, or the object ends
+  while it runs (eviction, a panic), the work runs again 30 s later, then after
+  1 min, 2 min and so on up to 1 h (`alarm_retry_delay`). Do the work inside
+  the future rather than spawning it: spawned work is lost if the object ends,
+  and its failures are not retried. Return an error only for failures worth
+  repeating the work for.
+- **Async work:** `Ctx::spawn(fut)` starts a task for work that is not tied
+  to an alarm. The node counts the task: the endpoint stays bound while
   it runs, the object reports Active (so it is not hibernated under the task,
   even with no endpoint bound), and a task left over when the endpoint closes is reported in
   `Stats::teardown_leftover_tasks`. A task started with `n0_future::task::spawn`
   is not counted. Handler futures need no `spawn`: the node runs each accepted
-  connection's `accept` as its own counted task.
+  connection's `accept` as its own counted task, and `on_alarm` keeps the
+  endpoint bound while it runs.
 - **No timers that outlive a connection.** A `sleep` inside a handler while its
   connection is open is fine; a loop that ticks while no peer is connected
   keeps the object resident.
 
 `CallBack` in `crates/iroh-do-harness/tests/library.rs` shows the pattern: the handler
-schedules, `on_alarm` spawns, the task dials.
+schedules, and `on_alarm` dials.
 
 ### Idle connections are closed by the object
 
@@ -381,7 +392,7 @@ object, and the object answers or calls back while they are connected, does.
 | `fn new(ctx) -> Self` | Once per object construction, after `schema`. |
 | `fn protocols(&self, ctx, p)` | Every activation, before the endpoint binds; the endpoint accepts exactly these ALPNs. |
 | `fn schema() -> &[&str]` | Idempotent SQL run on every construction of a minted object. Default: none. |
-| `fn on_alarm(&self, ctx, key, payload)` | Work scheduled with `Ctx::schedule` is due. |
+| `async fn on_alarm(&self, ctx, alarm) -> Result<(), AlarmError>` | Work scheduled with `Ctx::schedule` is due; kept and run again until it returns `Ok`. |
 | `fn status(&self, ctx) -> Map` | Extra fields for the status JSON (`admin.<zone>/status/<E>`). |
 | `fn join_hint(id) -> String` | The command shown on the endpoint list; `id` is z-base-32. |
 
@@ -389,7 +400,7 @@ object, and the object answers or calls back while they are connected, does.
 |---|---|
 | `id()` | This endpoint's EndpointId. |
 | `with_sql(\|sql\| …) -> Option<T>` | Synchronous SQL; `None` if the object was destroyed. |
-| `schedule(key, delay, payload)` / `cancel(key)` | Durable work for `App::on_alarm`, replacing pending work with the same key. |
+| `schedule(key, delay, payload)` / `cancel(key)` | Durable work for `App::on_alarm`, replacing pending work with the same key; kept until a run succeeds. |
 | `spawn(fut)` | A counted node task; keeps the endpoint bound while it runs. |
 | `peers()` / `has_socket(&peer)` | Peers with an authenticated relay socket: the only peers the object can dial. |
 | `connect(peer, alpn).await` | Dials over the peer's socket, binding the endpoint if needed. Errors: `NoSocket`, `Gone`, `Bind`, `Connect`. |

@@ -10,7 +10,11 @@ use std::{
 use iroh::{EndpointId, endpoint::Connection};
 use iroh_ingress_transport::peer_endpoint_addr;
 
-use crate::{MaybeSend, Shared, State, conn::Activity, sql::Sql};
+use crate::{
+    MaybeSend, Shared, State,
+    conn::Activity,
+    sql::{Sql, SqlError},
+};
 
 /// Prefix of the schedule keys of app work, so that they cannot collide with the host's own.
 pub const APP_KEY_PREFIX: &str = "app:";
@@ -87,9 +91,32 @@ impl Ctx {
         out
     }
 
+    /// Runs `f` on the object's database in a transaction: its writes are committed if it
+    /// returns `Ok`, and none of them are if it returns an error or the commit fails. Returns
+    /// `None` if the host has no database for this object any more (it was destroyed).
+    ///
+    /// Use it for writes that must happen together, so that an error means nothing was
+    /// written.
+    pub fn transaction<T>(
+        &self,
+        f: impl FnOnce(&dyn Sql) -> Result<T, SqlError>,
+    ) -> Option<Result<T, SqlError>> {
+        let node = self.node()?;
+        let mut f = Some(f);
+        let mut out = None;
+        let res = node.host().transaction(&mut |sql| {
+            let f = f
+                .take()
+                .ok_or_else(|| SqlError("transaction body called twice".into()))?;
+            out = Some(f(sql)?);
+            Ok(())
+        })?;
+        Some(res.and_then(|()| out.ok_or_else(|| SqlError("transaction body did not run".into()))))
+    }
+
     /// Schedules [`App::on_alarm`](crate::App::on_alarm) with `key` and `payload` after
     /// `delay`, replacing any pending work with the same key. The host persists it, so it
-    /// runs even if the object hibernates in between.
+    /// runs even if the object hibernates in between, and keeps it until a run succeeds.
     pub fn schedule(&self, key: &str, delay: Duration, payload: &str) {
         if let Some(node) = self.node() {
             node.host()

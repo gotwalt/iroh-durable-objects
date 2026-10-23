@@ -7,7 +7,7 @@ use iroh::{
     protocol::{AcceptError, ProtocolHandler},
 };
 
-use crate::Ctx;
+use crate::{Ctx, SqlError};
 
 /// An application hosted by the node.
 ///
@@ -37,9 +37,20 @@ pub trait App: Send + Sync + 'static {
         &[]
     }
 
-    /// Called when work scheduled with [`Ctx::schedule`] is due, possibly on an object
+    /// Runs work scheduled with [`Ctx::schedule`] once it is due, possibly on an object
     /// constructed after hibernation.
-    fn on_alarm(&self, _ctx: &Ctx, _key: &str, _payload: &str) {}
+    ///
+    /// The host keeps the work until the returned future completes with `Ok`. An error, or the
+    /// end of the object while the future runs (eviction, a panic), leaves the work to run
+    /// again later, with [`Alarm::attempt`] one higher. Work can therefore run more than once.
+    /// The endpoint stays bound while the future runs.
+    fn on_alarm(
+        &self,
+        _ctx: &Ctx,
+        _alarm: Alarm<'_>,
+    ) -> impl Future<Output = Result<(), AlarmError>> + Send {
+        async { Ok(()) }
+    }
 
     /// Extra fields for the endpoint's status JSON.
     fn status(&self, _ctx: &Ctx) -> serde_json::Map<String, serde_json::Value> {
@@ -62,7 +73,11 @@ pub trait DynApp: Send + Sync + 'static {
     /// See [`App::protocols`].
     fn protocols(&self, ctx: &Ctx, protocols: &mut Protocols);
     /// See [`App::on_alarm`].
-    fn on_alarm(&self, ctx: &Ctx, key: &str, payload: &str);
+    fn on_alarm<'a>(
+        &'a self,
+        ctx: &'a Ctx,
+        alarm: Alarm<'a>,
+    ) -> BoxFuture<'a, Result<(), AlarmError>>;
     /// See [`App::status`].
     fn status(&self, ctx: &Ctx) -> serde_json::Map<String, serde_json::Value>;
     /// Returns the app for downcasting to its concrete type.
@@ -78,8 +93,12 @@ impl<A: App> DynApp for A {
         App::protocols(self, ctx, protocols)
     }
 
-    fn on_alarm(&self, ctx: &Ctx, key: &str, payload: &str) {
-        App::on_alarm(self, ctx, key, payload)
+    fn on_alarm<'a>(
+        &'a self,
+        ctx: &'a Ctx,
+        alarm: Alarm<'a>,
+    ) -> BoxFuture<'a, Result<(), AlarmError>> {
+        Box::pin(App::on_alarm(self, ctx, alarm))
     }
 
     fn status(&self, ctx: &Ctx) -> serde_json::Map<String, serde_json::Value> {
@@ -90,6 +109,54 @@ impl<A: App> DynApp for A {
         self
     }
 }
+
+/// Work scheduled with [`Ctx::schedule`] that is due, as [`App::on_alarm`] receives it.
+#[derive(Debug, Clone, Copy)]
+pub struct Alarm<'a> {
+    /// The key the work was scheduled with.
+    pub key: &'a str,
+    /// The payload the work was scheduled with.
+    pub payload: &'a str,
+    /// How many earlier runs of this work did not complete: 0 on the first run.
+    pub attempt: u32,
+}
+
+/// Why alarm work failed. The host runs the work again later.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlarmError(pub String);
+
+impl AlarmError {
+    /// Creates an error from anything printable.
+    pub fn new(e: impl std::fmt::Display) -> Self {
+        Self(e.to_string())
+    }
+}
+
+impl std::fmt::Display for AlarmError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for AlarmError {}
+
+impl From<SqlError> for AlarmError {
+    fn from(e: SqlError) -> Self {
+        Self(e.to_string())
+    }
+}
+
+/// Delay before the next run of alarm work that has failed `attempt` + 1 times:
+/// [`ALARM_RETRY_BASE`] doubled per failure, at most [`ALARM_RETRY_MAX`].
+pub fn alarm_retry_delay(base: Duration, attempt: u32) -> Duration {
+    base.saturating_mul(1u32.checked_shl(attempt.min(31)).unwrap_or(u32::MAX))
+        .min(ALARM_RETRY_MAX)
+}
+
+/// Delay before alarm work that failed once runs again.
+pub const ALARM_RETRY_BASE: Duration = Duration::from_secs(30);
+/// Longest delay between runs of alarm work that keeps failing.
+pub const ALARM_RETRY_MAX: Duration = Duration::from_secs(3600);
 
 /// The functions of one [`App`] type, for hosts that choose the app at run time.
 #[derive(Clone, Copy)]
