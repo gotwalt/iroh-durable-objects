@@ -6,13 +6,11 @@ members = [
   "crates/iroh-do-core",
   "crates/iroh-do",
   "crates/iroh-do-harness",
-  "crates/iroh-do-wasm",
   "examples/chat/app",
   "examples/chat/client",
   "examples/echo/app",
   "examples/echo/client",
   "examples/deployment",
-  "crates/iroh-do-test-peer",
 ]
 
 [workspace.package]
