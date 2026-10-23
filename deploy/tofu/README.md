@@ -35,55 +35,8 @@ module "iroh_do" {
 }
 ```
 
-The bundle is given in one of two ways; exactly one input must be set.
-
-- `worker_bundle_dir`: the directory `deploy/build-worker.sh` writes, with
-  `index.js` and `index_bg.wasm`. The Rust deployment uses this.
-- `worker_manifest`: the path to the `manifest.json` of a wrangler dry-run
-  outdir (format in `deploy/BUILD.md`). It names the main module, which is also
-  listed in `modules`; the module uploads that file as the script's content and
-  every other entry of `modules` as a part (keyed by `name`, which wrangler
-  derives from the content hash). The `BUNDLE_SHA256` binding comes from it too. Paths in the manifest are
-  relative to its directory. A precondition on the script fails the plan unless
-  the main module imports each part as `"./<name>"`, because the provider does
-  not check part names and a mismatch would fail only at apply.
-
-```hcl
-module "iroh_ts" {
-  source = "<path or git URL>/deploy/tofu"
-
-  account_id      = "…"
-  zone_id         = "…"
-  zone_name       = "example.com"
-  hostname_prefix = "iroh-ts"
-  script_name     = "iroh-ts"
-  worker_manifest = "build/iroh-ts/manifest.json"
-  admin_token     = var.admin_token_ts
-
-  endpoint_class_name    = "Echo" # default "endpoint"
-  endpoint_binding_name  = "ENDPOINTS"
-  extra_endpoint_classes = [{ class_name = "Chat", binding_name = "CHAT" }]
-  registry_class_name    = "Registry" # default "registry"; null binds no registry
-  registry_binding_name  = "REGISTRY"
-  migrations = [
-    { tag = "v1", new_sqlite_classes = ["Echo"] },
-    { tag = "v2", new_sqlite_classes = ["Chat", "Registry"] },
-  ]
-}
-```
-
-`endpoint_class_name`, `endpoint_binding_name`, `registry_class_name` and
-`registry_binding_name` default to the Rust deployment's `endpoint`,
-`ENDPOINTS`, `registry` and `REGISTRY`. `extra_endpoint_classes` binds further
-endpoint classes, for a deployment with several apps (design note 013).
-
-`migrations` lists the Durable Object migrations, oldest first. Unset, there is
-one, `v1`, creating every bound class, as before. To add a class to a live
-script, append a step with a new tag; never change or remove a step that was
-applied. The module reads the live script's tag and sends only the steps after
-it: one step as `old_tag`/`new_tag`/`new_sqlite_classes`, several (a new
-script) as `steps`. The plan fails if the live tag is not in the list, or if a
-bound class is created by no step.
+The bundle is the directory `deploy/build-worker.sh` writes, `index.js` and
+`index_bg.wasm`, given as `worker_bundle_dir`.
 
 Several instances of the module can share a root module and a zone if each has
 its own `hostname_prefix` and `script_name`; each creates its own certificate
@@ -97,15 +50,12 @@ encrypt its state: the admin token is stored there
 
 ## What it creates
 
-- `cloudflare_workers_script.iroh_do`: the bundle (with `worker_bundle_dir`,
-  `index.js` as the main module and `index_bg.wasm` imported by it; with
-  `worker_manifest`, the modules the manifest lists), the bindings `ENDPOINTS`
-  (the `endpoint` namespace), `REGISTRY` (the `registry` namespace; omitted when
-  `registry_class_name` is null), `ADMIN_TOKEN` (secret), `ZONE_SUFFIX`,
-  `BUNDLE_SHA256`, `PKARR_RELAY` and `LOG_LEVEL`, the Durable Object migrations
-  (by default `v1`, whose `new_sqlite_classes` lists the bound classes), and Workers Logs and
-  traces (`observability`). The binding and class names given here are the
-  defaults; the `*_binding_name` and `*_class_name` variables change them.
+- `cloudflare_workers_script.iroh_do`: the bundle (`index.js` as the main
+  module and `index_bg.wasm` imported by it), the bindings `ENDPOINTS` (the
+  `endpoint` namespace), `REGISTRY` (the `registry` namespace), `ADMIN_TOKEN`
+  (secret), `ZONE_SUFFIX`, `BUNDLE_SHA256`, `PKARR_RELAY` and `LOG_LEVEL`, the
+  Durable Object migration `v1`, whose `new_sqlite_classes` are `endpoint` and
+  `registry`, and Workers Logs and traces (`observability`).
 - `cloudflare_dns_record.wildcard`: a proxied `AAAA 100::` record for
   `*.iroh-do.<zone>`. It only makes the names resolve to Cloudflare; the route
   serves every request, so nothing is sent to `100::`.
@@ -156,16 +106,8 @@ instead.
 
 ## This repository's deployment
 
-`examples/deployment/infra/` instantiates the module twice: `module.iroh_do`,
-the Rust bundle from `build/worker/` at `*.iroh-do.<zone>`, and
-`module.iroh_ts`, the TypeScript deployment (`examples/ts-deployment`: the
-chat and echo classes and the registry) from `build/iroh-ts/manifest.json` at
-`*.iroh-ts.<zone>` (design note 013). They are separate scripts with separate
-Durable Object namespaces, certificates and admin tokens. The classes and
-bindings in `module "iroh_ts"` must match `examples/ts-deployment/wrangler.toml`.
-`just build-ts` builds `build/iroh-ts/`, and `just plan` and `just apply` cover
-both modules; they need that directory to exist. `TS=1 just mint chat` mints in
-the TypeScript deployment.
+`examples/deployment/infra/` instantiates the module once, as `module.iroh_do`:
+the bundle from `build/worker/` at `*.iroh-do.<zone>`.
 
 Run everything through the `justfile` at the repository root. It passes secrets
 through the environment and never prints them.
@@ -180,16 +122,15 @@ just plan     # reports zero diff after `just up`
 just down     # typed confirmation, then tofu destroy (deletes every identity)
 ```
 
-`just up` creates three secrets in `.demo/` (gitignored, mode 600).
+`just up` creates two secrets in `.demo/` (gitignored, mode 600).
 `.demo/admin_token` becomes `TF_VAR_admin_token`; it authorizes `POST /mint`
-and nothing else, and there is no endpoint that returns keys.
-`.demo/admin_token_ts` is the same for `module.iroh_ts`
-(`TF_VAR_admin_token_ts`). Only `just up` creates these files; `just plan`,
-`apply`, `down` and `TS=1` commands fail with a message when one is missing or
-empty, so that a lost file does not silently rotate a token into a plan.
-`.demo/state_passphrase` becomes `TF_VAR_state_passphrase` and encrypts state
-and plan files. To run `tofu` by hand, export all three variables the same way:
-`TF_VAR_admin_token`, `TF_VAR_admin_token_ts` and `TF_VAR_state_passphrase`.
+and nothing else, and there is no endpoint that returns keys. Only `just up`
+creates these files; `just plan`, `apply`, `down`, `mint` and `destroy-room`
+fail with a message when one is missing or empty, so that a lost file does not
+silently rotate a token into a plan. `.demo/state_passphrase` becomes
+`TF_VAR_state_passphrase` and encrypts state and plan files. To run `tofu` by
+hand, export both variables the same way: `TF_VAR_admin_token` and
+`TF_VAR_state_passphrase`.
 `just infra-check` runs `fmt` and `validate` without credentials.
 
 ### Logs
@@ -294,25 +235,21 @@ configuration as written, not with `ignore_changes` applied, and then requires
 the stored value to equal the planned one. Design note 012 had added
 `ignore_changes = [migrations]` to hide the diff left after the first apply,
 when the configuration stops sending the migration. With it, the plan keeps the
-old value, so any later update of a script whose state holds a migration
-(`module.iroh_ts`, created with `v1`) would fail with "Provider produced
-inconsistent result after apply" after the API call had succeeded. Step 2 of
-design note 013 removed it. As before note 012, an apply that sends a migration
+old value, so any later update of a script whose state holds a migration would
+fail with "Provider produced inconsistent result after apply" after the API
+call had succeeded. It is removed. As before note 012, an apply that sends a migration
 leaves a diff (`migrations` to null) that one more apply clears. `just up`
 makes that second apply itself, so its end state has no diff. The second apply
 is a full script upload, which creates a new deployment; Cloudflare restarts the
 script's live Durable Objects on a new deployment and keeps their storage. That
 relies on Cloudflare's documented behaviour and has not been tested here.
-`module.iroh_do`'s state holds null (design note 011, phase 5), so its plan is
-unchanged.
+`module.iroh_do`'s state holds null (design note 011, phase 5), so its plan has
+no change.
 
 Not yet verified:
 
 - that the five permissions above are sufficient on their own;
 - a first deploy on a fresh account with this module;
-- the `steps` form of the migration, sent when a new script has several pending
-  steps (`module.iroh_ts` on a fresh account): the provider accepts it, but no
-  apply has sent it to the API;
 - that the second apply of `just up` leaves Durable Object storage intact.
 
 Certificate issuance takes minutes. `just up` polls `https://admin.<suffix>/mint`

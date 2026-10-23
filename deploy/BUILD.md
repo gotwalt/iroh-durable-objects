@@ -15,12 +15,8 @@ deploy/build-worker.sh        # or: just build-worker
 Requirements: Rust 1.93.0 with `wasm32-unknown-unknown` (`rust-toolchain.toml`),
 `worker-build` 0.8.7 (`cargo install worker-build --version 0.8.7 --locked`),
 node for the import check, and on macOS Homebrew LLVM (`brew install llvm`).
-The TypeScript bundle also needs `wasm-bindgen-cli` 0.2.129 (`cargo install
-wasm-bindgen-cli --version 0.2.129 --locked`) and `npm ci` at the repository
-root; `just build-ts` runs `npm ci` when `node_modules` is missing or older than
-the lockfile. Neither build script pins LLVM. The one used here, when this was
-written (2026-10-22), was Homebrew LLVM 23.1.1 (`clang --version`);
-`packages/iroh-do/build-wasm.sh` builds with `cargo build --locked`.
+The build script does not pin LLVM. The one used here, when this was written
+(2026-10-22), was Homebrew LLVM 23.1.1 (`clang --version`).
 
 On macOS the script sets `CC_wasm32_unknown_unknown` and
 `AR_wasm32_unknown_unknown` to Homebrew's `clang` and `llvm-ar`. ring compiles C
@@ -45,47 +41,6 @@ Two modules are uploaded: `index.js` as the main module
 (`application/javascript+module`) and `index_bg.wasm` (`application/wasm`),
 which `index.js` imports. The script deletes worker-build's `worker/shim.mjs`
 alias and `package.json`, which are not part of the upload.
-
-## TypeScript host bundle
-
-The TypeScript host (design note 013) is built by wrangler instead of
-worker-build. The deployment's build (`npm --prefix examples/ts-deployment run
-build`, called by `just build-ts`) runs `wrangler deploy --dry-run --outdir
-dist` and writes `manifest.json` next to the output; `just build-ts` copies
-the directory to `build/iroh-ts/`. The script exports the classes `Echo`,
-`Chat` and `Registry`, bound as `ENDPOINTS`, `CHAT` and `REGISTRY`, with the
-migrations `v1` (`Echo`) and `v2` (`Chat`, `Registry`):
-
-```
-build/iroh-ts/
-  worker.js                              # ESM main module; imports "./<hash>-iroh_do_wasm_bg.wasm"
-  <hash>-iroh_do_wasm_bg.wasm            # named by wrangler after the wasm's content hash
-  manifest.json
-```
-
-```json
-{ "main_module": "worker.js",
-  "modules": [ { "name": "worker.js", "path": "worker.js",
-                 "content_type": "application/javascript+module" },
-               { "name": "<hash>-iroh_do_wasm_bg.wasm",
-                 "path": "<hash>-iroh_do_wasm_bg.wasm",
-                 "content_type": "application/wasm" } ],
-  "bundle_sha256": "<hex>" }
-```
-
-`path` is relative to the manifest's directory. `main_module` names the main
-module, and `modules` lists every file of the bundle including it, first
-(`packages/iroh-do/scripts/bundle.mjs` writes the manifest). `name` is the module's
-name as the main module imports it, without `./`, and the part name OpenTofu
-uploads. `deploy/tofu` reads the manifest through its `worker_manifest` input
-(`deploy/tofu/README.md`): it uploads the file named by `main_module` as the
-script's content and every other entry of `modules` as a part, binds
-`bundle_sha256` as `BUNDLE_SHA256`, and checks the part names against the main
-module at plan time. `just bundle-info-ts` prints the hash and the size of each
-module.
-
-The worker-build instructions above stay in force for the Rust deployment
-(`module.iroh_do`) until it is retired.
 
 ## Bindings
 
