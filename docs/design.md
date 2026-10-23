@@ -84,6 +84,10 @@ forwarded from outside. These calls use `stub.fetch`: worker-build 0.8.7
 wraps Durable Object classes in a JavaScript proxy that does not extend
 `DurableObject`, so Workers RPC to the object fails at runtime.
 
+Every request gets a response. If a binding, an object or the registry fails,
+the router answers 503 and logs `router_error`, rather than failing the
+Worker's invocation.
+
 ## The ingress
 
 `crates/iroh-relay-ingress` is the server side of the iroh relay protocol as a
@@ -131,6 +135,16 @@ in the WebSocket's attachment when the peer authenticates and whenever the
 destination-violation count changes, and restores it when the object is
 recreated.
 
+**The socket table.** The sessions of one object and the socket each peer is
+reached through are kept by `iroh_relay_ingress::Sockets`
+(`crates/iroh-relay-ingress/src/table.rs`), sans-io like the session: the host
+names each socket, passes its events in with the current time, and carries out
+the `Effect`s each call returns (write a frame, store an attachment, close a
+socket, a peer up or down, datagrams for the node, a handshake deadline). The
+table supersedes a peer's older socket, restores sessions from attachments,
+and runs the handshake sweep. The Durable Object and the native harness both
+drive it; `tests/table.rs` tests it alone.
+
 ## The transport
 
 The object's `Endpoint` has no IP transport, no relay transport and no
@@ -166,13 +180,15 @@ The library hosts an app; it does not know what the app does
   the endpoint accepts exactly those ALPNs. The node dispatches accepted
   connections as `Router` does: `on_accepting`, then `accept`.
 - `schema` is SQL the object runs on every construction of a minted object.
-- `on_alarm` receives work the app scheduled.
+- `on_alarm` runs work the app scheduled, as a future that returns a
+  `Result`. The object keeps the work until a run succeeds (see
+  [Alarms](#alarms)).
 - `status` adds fields to the endpoint's status.
 
 One app value exists per object construction. It reaches the node through
-`Ctx` (`crates/iroh-do-core/src/ctx.rs`): synchronous SQL, scheduling, the
-peers that hold a relay socket, dialing them, spawning tasks, and activity
-reports for the idle close.
+`Ctx` (`crates/iroh-do-core/src/ctx.rs`): synchronous SQL and transactions,
+scheduling, the peers that hold a relay socket, dialing them, spawning tasks,
+and activity reports for the idle close.
 
 The deployment is a crate that invokes `iroh_do::worker! { apps: [...] }`,
 which declares the Durable Object classes and the Worker's `fetch` handler
@@ -278,8 +294,8 @@ The library's tables (`crates/iroh-do/src/schema.rs`):
 | Table | Contents |
 |---|---|
 | `identity` | The endpoint's app, secret key and EndpointId. Written once, at mint. |
-| `counters` | `wakes` (object constructions), `endpoint_builds`, `registered`. |
-| `schedule` | Alarm work: pkarr republish, the handshake-deadline sweep, and the app's work under keys prefixed `app:`. One alarm is armed for the earliest row. |
+| `counters` | `wakes` (object constructions), `endpoint_builds`, `registered`, and `bound_at_ms` while an `Endpoint` is bound. |
+| `schedule` | Alarm work: pkarr republish, the handshake-deadline sweep, and the app's work under keys prefixed `app:`, each with the count of its runs that did not complete. One alarm is armed for the earliest row (see [Alarms](#alarms)). |
 | `pkarr_state` | Result of the last publish. |
 
 The app's tables follow, from its `App::schema`. The chat's
@@ -288,7 +304,7 @@ The app's tables follow, from its `App::schema`. The chat's
 | Table | Contents |
 |---|---|
 | `log` | The message log: room events and diagnostic requests (newest 10,000 rows, none older than 14 days). |
-| `log_meta` | `log_seq` and `room_seq`, which keep `seq` and `prev` monotonic across pruning. |
+| `log_meta` | `log_seq` and `room_seq`, which keep `seq` and `prev` monotonic across pruning, and `prune_due_ms`, when the prune alarm is due. |
 | `members` | Chat room members: peer id, nick, whether joined. |
 
 The registry object holds one table, `endpoints(id, app, label, minted_at)`.
@@ -302,6 +318,11 @@ equals the object's name. On a mismatch it refuses all traffic. An object
 with no stored identity writes nothing, so requests for random names create
 no storage.
 
+`bound_at_ms` is written when an `Endpoint` binds and deleted when it closes.
+A constructor that finds it knows that the previous instance ended with an
+`Endpoint` bound, evicted or trapped with whatever connections it had, and logs
+`evicted_active` before deleting it. It costs two writes per activation.
+
 What is deliberately not stored: QUIC connection state, connection ids,
 congestion and RTT state. A restored connection would be inconsistent with
 the peer's timers, which kept running during the suspension.
@@ -312,13 +333,41 @@ supply them: the TLS session store, which 0-RTT resumption needs, and the
 stateless-reset and connection-id keys, which let a new instance reset a
 previous instance's connections. See [Restart state](#restart-state).
 
+## Alarms
+
+A Durable Object has one alarm. The object multiplexes its work onto it
+through the `schedule` table: the pkarr republish, the handshake sweep, and
+the work the app schedules with `Ctx::schedule` (`crates/iroh-do/src/glue/endpoint.rs`,
+`Object::alarm`). The alarm is armed for the earliest row, and deleted when the
+table is empty.
+
+Work is deleted only after it has succeeded. When the alarm fires, each due
+row is first leased: moved to its retry time, with its attempt counted, and
+the alarm is armed for the result. Then the work runs. If it succeeds, the row
+is deleted, unless the work scheduled the same key again meanwhile. If it
+fails, or the object ends while it runs (an eviction, a panic), the row stays
+and runs again at its retry time, 30 s after the first failure and twice as
+long after each further one, up to 1 h (`alarm_retry_delay`). The rows after a
+failed one still run. The app sees the attempt count in `Alarm::attempt`, and
+its `App::on_alarm` is a future that returns `Result`: the object keeps the
+work until it returns `Ok`, and keeps the endpoint bound while it runs. Work
+can therefore run more than once.
+
+The library's work runs inside the alarm handler. The app's runs in tasks
+that start as the handler returns. workers-rs leaves the promise of a handler
+whose wasm instance trapped unsettled, and the runtime delivers no further
+alarm while one is unsettled, so app work that panicked inside the handler
+would never be retried. `tests/workerd/fault-test.mjs` makes an app's work
+fail, then panic, then succeed, on Miniflare, and checks the row and its
+retry times after each run.
+
 ## Dial-back
 
 The object can connect to a peer that holds a relay socket to it, through
 `Ctx::connect`. In the chat app's diagnostic protocol (`iroh-do/ctl/1`), a peer
 sends `/callback <secs>`. The app schedules work through `Ctx::schedule`, which
-stores a schedule row and arms an alarm. When the alarm fires, the app calls
-`Ctx::connect`, which starts the `Endpoint` if needed and calls
+stores a schedule row and arms an alarm. When the alarm fires, the app's
+`on_alarm` calls `Ctx::connect`, which starts the `Endpoint` if needed and calls
 `Endpoint::connect` with an `EndpointAddr` whose only address is the peer's
 `CustomAddr`. The QUIC
 handshake goes out over the peer's existing relay socket. A stock iroh client
@@ -364,7 +413,20 @@ reach other endpoints only through the room, which forwards nothing.
 
 **Catch-up.** Every stored room event carries its `seq` and the `seq` of the
 previous room event. A client that sees a gap, or that restarts, asks for the
-events it missed with `/since`.
+events it missed with `/since`. The room keeps at most 500 lines queued for one
+member while a delivery to it is being written, dropping the oldest, so that
+one `/since` fetches what was dropped.
+
+**Writes.** A request that stores an event writes it, and the member's new
+state with it, in one transaction (`Ctx::transaction`). The reply is
+`storage error` only when that transaction failed and nothing was stored.
+Once the event is stored the reply is `ok`, even if queueing it for the other
+members fails. A request that fails in any other way, such as a failed read,
+gets no reply: the room resets the request stream, because it cannot tell
+whether the request took effect. Room history is read through a partial index
+on the room events (`log_room`). The log is pruned on every insert; the alarm
+that prunes a quiet log is armed by the first insert after it last ran, not
+moved by every insert.
 
 **Cost.** The room is Active while messages flow and returns to Warm about
 12 s after the last one. Each present member adds one short wake per 15 s
@@ -380,11 +442,12 @@ hibernate with idle QUIC connections open; see [Open questions](#open-questions)
 When an endpoint is minted, the object publishes a signed pkarr record for `E`
 containing only its relay URL, with a TTL of 30 s, to n0's pkarr relay
 (`https://dns.iroh.link/pkarr`). It builds the record with iroh's own
-`EndpointInfo::to_pkarr_signed_packet` (`crates/iroh-do/src/pkarr.rs`). The
+`EndpointInfo::to_pkarr_signed_packet` (`crates/iroh-do-core/src/pkarr.rs`). The
 publish is confirmed by reading the record back, because the server answers
 204 to a stale record without storing it. The object republishes every 24 h
 from its alarm. The iroh DNS server expires records seven days after their
-timestamp by default; n0's production setting is not published.
+timestamp by default; n0's production setting is not published. Each request
+is aborted after 10 s, and its response body is read to the end.
 
 Publishing at mint, before the EndpointId is handed out, keeps resolvers from
 caching a negative answer for the name. Peers with default discovery resolve
@@ -397,14 +460,21 @@ POST https://admin.<zone>/mint
 Authorization: Bearer <ADMIN_TOKEN>
 ```
 
-The router compares the token in constant time, generates a secret key in the
-isolate, and sends it with the app's name to the object named after the new
-EndpointId on the internal mint path. The body may name the app,
-`{"app": "echo"}`; with none, the deployment's first app is used, and an
-unknown name is a 400. The object stores the key and the app's name if it has
-no identity yet, verifies the key against its name, creates the app's tables,
-publishes the pkarr record, and returns `{id, app, relay_url, published}`. The secret is never returned and there is no
-export path. The admin token is an OpenTofu variable; the keys never pass
+The router compares the SHA-256 digests of the given and the configured
+token in constant time, generates a secret key in the isolate, and sends it
+with the app's name to the object named after the new EndpointId on the
+internal mint path. The body may name the app, `{"app": "echo"}`; with none,
+the deployment's first app is used, and an unknown name is a 400. The object
+verifies the key against its name, and if it has no identity yet stores the
+key and the app's name, creates the tables and builds the node and the app,
+in one storage transaction (`ctx.storage.transactionSync`, bound with
+wasm-bindgen in `crates/iroh-do/src/glue/tx.rs` because workers-rs 0.8.7 does
+not offer it). If any step fails, nothing is stored: the object logs
+`mint_failed`, answers 503, and the router does not register the id. A panic
+in the app's constructor rolls the transaction back too, but workers-rs then
+leaves the request without an answer. The object then publishes the pkarr
+record and returns `{id, app, relay_url, published}`. The secret is never
+returned and there is no export path. The admin token is an OpenTofu variable; the keys never pass
 through OpenTofu. The request body may carry a `label`, which the router
 records with the new id in the registry.
 
@@ -440,8 +510,10 @@ to it. Minting stays behind the admin token
 | Abrupt eviction: deploy, crash, runtime decision | Packets on the old connection go unanswered until the negotiated QUIC idle timeout expires (10 s in `abrupt_restart_documented`, `examples/chat/app/tests/node.rs`) | Redials; the object rebuilds from storage |
 | Peer closes its relay socket | n/a | The object drops the session; if it was the last, the object is Cold |
 | Second socket from the same peer | Old socket closed with code 4000 | The new socket replaces the path |
-| Alarm work fails (for example a storage error) | Dial-back or republish delayed | The row is retried after 30 s; other rows still run |
-| Panic | Same as abrupt eviction | The wasm instance aborts and the object is reconstructed |
+| Alarm work fails, or the object ends while it runs | Dial-back or republish delayed | The row is retried after 30 s, doubling up to 1 h; other rows still run ([Alarms](#alarms)) |
+| Mint fails | 503; nothing is stored | The caller mints again |
+| Router cannot reach an object or the registry | 503 | The caller retries |
+| Panic | Same as abrupt eviction | The wasm instance aborts and the object is reconstructed; if its `Endpoint` was bound, the constructor logs `evicted_active` |
 
 ## Logs
 
@@ -451,8 +523,9 @@ by level. Span fields are flattened into the object, so iroh's own events
 inside a node task carry `endpoint`. Events meant for operators have a stable
 `event` field: `wake`, `state`, `endpoint_bind`, `endpoint_close`,
 `ingress_auth`, `socket_close`, `conn_open`, `conn_close`, `room_request`,
-`room_event`, `room_delivery`, `dial_back`, `alarm`, `pkarr_publish`, `mint`
-and `registry_register`, among others. The `LOG_LEVEL` binding filters by
+`room_event`, `room_delivery`, `dial_back`, `alarm`, `alarm_entry_failed`,
+`pkarr_publish`, `mint`, `mint_failed`, `evicted_active`, `router_error` and
+`registry_register`, among others. The `LOG_LEVEL` binding filters by
 target and level; the default keeps iroh and noq at `warn`. No event carries a
 key, the admin token or message text. Field names and queries are in
 [`design-notes/010`](design-notes/010-structured-logs.md).

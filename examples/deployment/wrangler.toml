@@ -12,7 +12,7 @@ ZONE_SUFFIX = "localhost"
 PKARR_RELAY = "https://dns.iroh.link/pkarr"
 BUNDLE_SHA256 = "local"
 # tracing filter directives (design note 010); infra/ binds the same default.
-LOG_LEVEL = "info,iroh=warn,noq=warn,netwatch=error,iroh_do=info"
+LOG_LEVEL = "info,iroh=warn,noq=warn,netwatch=error,iroh_do=info,iroh_relay_ingress=info"
 
 # One object per endpoint. The class is exported to JS as `endpoint`, so the
 # namespace is `iroh-do_endpoint`.

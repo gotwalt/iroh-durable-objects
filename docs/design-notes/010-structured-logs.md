@@ -41,9 +41,11 @@ var for local runs). It takes `level` and `target=level` directives separated
 by commas, the subset of `EnvFilter` syntax without span and field filters,
 parsed by `tracing_subscriber::filter::Targets`. A directive matches every
 target it is a prefix of, and the longest match wins. The default is
-`info,iroh=warn,noq=warn,netwatch=error,iroh_do=info`: `iroh=warn` also covers
+`info,iroh=warn,noq=warn,netwatch=error,iroh_do=info,iroh_relay_ingress=info`: `iroh=warn` also covers
 `iroh_relay` and our `iroh_relay_ingress` and `iroh_ingress_transport`, and
-`iroh_do=info` takes `iroh_do` and `iroh_do_core` back to `info`. `netwatch`
+`iroh_do=info` takes `iroh_do` and `iroh_do_core` back to `info`.
+`iroh_relay_ingress=info`, added by design note 015, keeps the socket table's
+`ingress_auth`, `socket_close` and `dst_violation` events. `netwatch`
 warns on every endpoint bind because workerd has no `navigator.onLine`. An
 invalid value falls back to the default and logs `log_level_invalid`. The
 subscriber is installed once per isolate, by the router's `fetch` or by the

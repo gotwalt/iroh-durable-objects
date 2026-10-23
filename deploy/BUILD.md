@@ -52,7 +52,7 @@ alias and `package.json`, which are not part of the upload.
 | `ADMIN_TOKEN` | secret | bearer token for `POST admin.<zone>/mint`; unset or empty disables minting |
 | `PKARR_RELAY` | plain text | optional, default `https://dns.iroh.link/pkarr`; empty disables publishing |
 | `BUNDLE_SHA256` | plain text | contents of `build/worker/BUNDLE_SHA256`, reported by `/status` on `iroh-do/ctl/1` |
-| `LOG_LEVEL` | plain text | optional, `tracing` filter directives for the JSON logs; default `info,iroh=warn,noq=warn,netwatch=error,iroh_do=info` (design note 010) |
+| `LOG_LEVEL` | plain text | optional, `tracing` filter directives for the JSON logs; default `info,iroh=warn,noq=warn,netwatch=error,iroh_do=info,iroh_relay_ingress=info` (design note 010) |
 
 Durable Object classes: one migration, `v1`, declares `endpoint` and `registry` as
 `new_sqlite_classes`. workers-rs 0.8.7's `#[durable_object]` exports the class

@@ -71,7 +71,7 @@ variable "pkarr_relay" {
 variable "log_level" {
   description = "tracing filter for the Worker's logs (design note 010)."
   type        = string
-  default     = "info,iroh=warn,noq=warn,netwatch=error,iroh_do=info"
+  default     = "info,iroh=warn,noq=warn,netwatch=error,iroh_do=info,iroh_relay_ingress=info"
 }
 
 variable "certificate_authority" {

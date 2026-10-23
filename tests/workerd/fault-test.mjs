@@ -72,7 +72,7 @@ const mf = new Miniflare({
           ADMIN_TOKEN: text(ADMIN_TOKEN),
           PKARR_RELAY: text(""),
           BUNDLE_SHA256: text("fault-test"),
-          LOG_LEVEL: text("info,iroh=warn,noq=warn"),
+          LOG_LEVEL: text("info,iroh=warn,noq=warn,iroh_do=info,iroh_relay_ingress=info"),
         },
         exports: { [CLASS]: { type: "durable-object", storage: "sqlite" }, registry: { type: "durable-object", storage: "sqlite" } },
       },

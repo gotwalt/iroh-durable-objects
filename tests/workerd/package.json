@@ -4,7 +4,8 @@
   "type": "module",
   "description": "Deterministic eviction tests for the iroh-do Worker on Miniflare/workerd",
   "scripts": {
-    "test:evict": "node evict-test.mjs"
+    "test:evict": "node evict-test.mjs",
+    "test:fault": "node fault-test.mjs"
   },
   "devDependencies": {
     "miniflare": "5.20260908.0-alpha"

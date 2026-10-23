@@ -36,9 +36,10 @@ use tracing_subscriber::{
 /// of `tracing_subscriber::EnvFilter` syntax without span and field filters. A target matches
 /// every target it is a prefix of, and the longest matching directive wins, so `iroh=warn`
 /// also covers `iroh_relay`, and `iroh_do=info` takes this crate and `iroh_do_core` back to
-/// `info`. `netwatch` warns on every endpoint bind in workerd, where `navigator.onLine` does
-/// not exist.
-pub const DEFAULT_LOG_LEVEL: &str = "info,iroh=warn,noq=warn,netwatch=error,iroh_do=info";
+/// `info`. `iroh_relay_ingress=info` keeps the socket table's events (`ingress_auth`,
+/// `socket_close`, `dst_violation`). `netwatch` warns on every endpoint bind in workerd, where
+/// `navigator.onLine` does not exist.
+pub const DEFAULT_LOG_LEVEL: &str = "info,iroh=warn,noq=warn,netwatch=error,iroh_do=info,iroh_relay_ingress=info";
 
 /// Writes one serialized event. Receives the event's level and its JSON text.
 pub type Write = fn(Level, &str);
@@ -266,6 +267,9 @@ mod tests {
         assert!(t.would_enable("worker", &Level::INFO));
         assert!(!t.would_enable("iroh::endpoint", &Level::INFO));
         assert!(!t.would_enable("iroh_relay", &Level::INFO));
+        // The socket table's `ingress_auth` and `socket_close` are info events.
+        assert!(t.would_enable("iroh_relay_ingress::table", &Level::INFO));
+        assert!(!t.would_enable("iroh_relay_ingress::session", &Level::DEBUG));
         assert!(t.would_enable("iroh::endpoint", &Level::WARN));
         assert!(!t.would_enable("noq_proto::connection", &Level::INFO));
         assert!(!t.would_enable("iroh_do_core", &Level::DEBUG));

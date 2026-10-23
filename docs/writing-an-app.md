@@ -400,6 +400,7 @@ object, and the object answers or calls back while they are connected, does.
 |---|---|
 | `id()` | This endpoint's EndpointId. |
 | `with_sql(\|sql\| …) -> Option<T>` | Synchronous SQL; `None` if the object was destroyed. |
+| `transaction(\|sql\| …) -> Option<Result<T, SqlError>>` | Synchronous SQL in one storage transaction: committed if the closure returns `Ok`, rolled back otherwise. |
 | `schedule(key, delay, payload)` / `cancel(key)` | Durable work for `App::on_alarm`, replacing pending work with the same key; kept until a run succeeds. |
 | `spawn(fut)` | A counted node task; keeps the endpoint bound while it runs. |
 | `peers()` / `has_socket(&peer)` | Peers with an authenticated relay socket: the only peers the object can dial. |
