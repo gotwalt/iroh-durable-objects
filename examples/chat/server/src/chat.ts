@@ -1,7 +1,7 @@
 // The chat object: an iroh endpoint that serves a chat room (`iroh-do/room/1`) and the
 // diagnostic protocols `iroh-do/ctl/1` and `iroh-do/echo/1`, and dials peers back with
 // `iroh-do/notify/1`. examples/chat/common/PROTOCOL.md specifies all four.
-import { IrohDurableObject, NotMintedError, type Protocols, type Timings } from "iroh-do";
+import { IrohDurableObject, type IrohVars, NotMintedError, type Protocols, type Timings } from "iroh-do";
 import { Ctl } from "./ctl";
 import { serveEcho } from "./echo";
 import { rethrowTrap } from "./errors";
@@ -11,8 +11,8 @@ import { CTL_ALPN, ECHO_ALPN, ROOM_ALPN } from "./protocol";
 import { Room } from "./room";
 import { ChatStorage, PRUNE_KEY } from "./storage";
 
-/** The bindings the class reads. */
-export interface ChatEnv {
+/** The bindings the class reads, with the vars the base class reads (IrohVars). */
+export interface ChatEnv extends IrohVars {
   /** This class's namespace; the base class checks a minted key against the object's name. */
   CHAT: DurableObjectNamespace<Chat>;
   /** Shorter connection limits for tests, in milliseconds; unbound in the deployment. */
