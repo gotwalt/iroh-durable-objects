@@ -1,6 +1,6 @@
 # 013: TypeScript owns the Durable Object; Rust is a wasm library
 
-**Status:** accepted (2026-10-22). Replaces the app API of 011 and the glue
+**Status:** superseded by 014 (2026-10-22); the TypeScript host is retired and kept at tag `ts-host-final`. Its narrowing of the sans-io principle stands. Was: accepted (2026-10-22). Replaces the app API of 011 and the glue
 layout of 011 and 012. Narrows the explicit-clock claim of the sans-io
 principle (P5 in `spec.md` §1), as the maintainer accepted; `spec.md` carries
 the new wording. Evidence: `docs/verification/ts-host.md`.
