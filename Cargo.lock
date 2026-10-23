@@ -1776,35 +1776,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iroh-do-test-peer"
-version = "0.1.0"
-dependencies = [
- "iroh",
- "n0-error",
- "tokio",
-]
-
-[[package]]
-name = "iroh-do-wasm"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "getrandom 0.4.3",
- "iroh",
- "iroh-base",
- "iroh-do-core",
- "iroh-relay-ingress",
- "js-sys",
- "rand_core 0.10.1",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "wasm-bindgen",
- "wasm-bindgen-futures",
-]
-
-[[package]]
 name = "iroh-do-worker"
 version = "0.1.0"
 dependencies = [

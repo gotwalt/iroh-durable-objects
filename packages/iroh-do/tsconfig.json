@@ -1,8 +1,0 @@
-{
-  "extends": "../../tsconfig.base.json",
-  "compilerOptions": {
-    "noEmit": true,
-    "types": ["@cloudflare/vitest-plugin/types"]
-  },
-  "include": ["src/**/*.ts", "test/unit/**/*.ts", "test/fixture/*.ts", "types/*.d.ts", "ambient/*.d.ts"]
-}

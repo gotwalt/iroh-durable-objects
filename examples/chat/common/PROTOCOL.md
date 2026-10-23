@@ -2,9 +2,9 @@
 
 The wire definition of the four ALPNs that the chat object serves and uses:
 `iroh-do/room/1`, `iroh-do/ctl/1`, `iroh-do/echo/1` and `iroh-do/notify/1`. This
-document is the specification. Two servers implement it, the Rust chat app
-(`examples/chat/app`) and the TypeScript chat object (`examples/chat/server`);
-where a server differs from this document, the server is wrong. Every client must
+document is the specification. The Rust chat app (`examples/chat/app`)
+implements it, and so may any other server; where a server differs from this
+document, the server is wrong. Every client must
 be able to talk to it. Where design note 008 and this document differ, this
 document holds (see
 [Differences](#differences-from-design-note-008-and-between-implementations)), and
@@ -411,7 +411,7 @@ Where note 008 is silent or says otherwise, this document holds.
    not mention it.
 9. **`/history 0`** replies with no lines; values above 200 are silently reduced.
 10. **Retention alarm.** Note 008 and `docs/design.md` speak of a daily alarm. The
-    apps keep a single pending alarm under the key `prune`, not a daily one. An
+    app keeps a single pending alarm under the key `prune`, not a daily one. An
     insert arms it, 14 days plus 60 seconds later, only when none is pending; when it
     fires it moves itself to 14 days plus 60 seconds after the newest record left.
 11. **The chat client** (`examples/chat/client/src/room.rs`) differs from the

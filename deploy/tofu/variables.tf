@@ -41,68 +41,8 @@ variable "script_name" {
 }
 
 variable "worker_bundle_dir" {
-  description = "Directory holding index.js and index_bg.wasm, as deploy/build-worker.sh writes them. Set this or worker_manifest, not both."
+  description = "Directory holding index.js and index_bg.wasm, as deploy/build-worker.sh writes them."
   type        = string
-  default     = null
-}
-
-variable "worker_manifest" {
-  description = "Path to the manifest.json of a wrangler dry-run outdir (deploy/BUILD.md): main_module, modules and bundle_sha256. Paths in it are relative to its directory. Set this or worker_bundle_dir, not both."
-  type        = string
-  default     = null
-
-  validation {
-    condition     = (var.worker_manifest == null) != (var.worker_bundle_dir == null)
-    error_message = "Set exactly one of worker_bundle_dir and worker_manifest."
-  }
-}
-
-variable "endpoint_class_name" {
-  description = "Durable Object class holding one endpoint per object. Cloudflare names the namespace <script_name>_<class>; renaming a class on a live script is a delete plus a create."
-  type        = string
-  default     = "endpoint"
-}
-
-variable "endpoint_binding_name" {
-  description = "Binding of the endpoint class's namespace."
-  type        = string
-  default     = "ENDPOINTS"
-}
-
-variable "registry_class_name" {
-  description = "Durable Object class of the endpoint list. null binds no registry and migrates no class for it."
-  type        = string
-  default     = "registry"
-  nullable    = true
-}
-
-variable "registry_binding_name" {
-  description = "Binding of the registry class's namespace; unused when registry_class_name is null."
-  type        = string
-  default     = "REGISTRY"
-}
-
-variable "extra_endpoint_classes" {
-  description = "Further endpoint classes of a deployment with several apps (the TypeScript host, design note 013), bound beside endpoint_class_name."
-  type = list(object({
-    class_name   = string
-    binding_name = string
-  }))
-  default = []
-}
-
-variable "migrations" {
-  description = "The Durable Object migrations, oldest first: each a tag and the classes it creates. null means one migration, v1, creating every bound class. Append a step to add classes to a live script; never change or remove one that was applied."
-  type = list(object({
-    tag                = string
-    new_sqlite_classes = list(string)
-  }))
-  default = null
-
-  validation {
-    condition     = var.migrations == null || (length(var.migrations) > 0 && length(distinct([for m in coalesce(var.migrations, []) : m.tag])) == length(coalesce(var.migrations, [])))
-    error_message = "migrations must be null or a non-empty list with distinct tags."
-  }
 }
 
 variable "admin_token" {
