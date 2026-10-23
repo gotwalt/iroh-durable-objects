@@ -127,10 +127,18 @@ impl Store {
     /// Creates the library's tables and then `app`'s, if they do not exist. Only call with
     /// an identity.
     ///
-    /// There is no upgrade path: an object created with an older schema keeps it (design
-    /// note 008, Storage).
+    /// The library's one upgrade, [`schema::SCHEDULE_ADD_ATTEMPT`], runs before the app's
+    /// tables; the app's tables have no upgrade path (design note 008, Storage).
     pub fn create_schema(&self, app: &[&str]) -> Result<()> {
-        for stmt in schema::SCHEMA.iter().chain(app) {
+        for stmt in schema::SCHEMA {
+            self.sql.exec(stmt, None)?;
+        }
+        if let Err(e) = self.sql.exec(schema::SCHEDULE_ADD_ATTEMPT, None)
+            && !e.to_string().contains(schema::DUPLICATE_COLUMN)
+        {
+            return Err(e);
+        }
+        for stmt in app {
             self.sql.exec(stmt, None)?;
         }
         Ok(())

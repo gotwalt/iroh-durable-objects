@@ -310,8 +310,9 @@ The app's tables follow, from its `App::schema`. The chat's
 The registry object holds one table, `endpoints(id, app, label, minted_at)`.
 
 Session state lives in WebSocket attachments, not in SQLite. The schema is
-created as-is on first use; there is no upgrade path, so changing it means
-resetting the deployment's state.
+created as-is on first use. The library has one upgrade, the `attempt`
+column of `schedule` (design note 015); otherwise there is no upgrade path,
+and changing the schema means resetting the deployment's state.
 
 On every construction the object checks that the stored key's public key
 equals the object's name. On a mismatch it refuses all traffic. An object

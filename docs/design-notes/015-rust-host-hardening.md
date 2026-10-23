@@ -16,7 +16,11 @@ Now each due row is leased before its work runs: moved to its retry time,
 with an attempt count, and the alarm is armed for the result. The row is
 deleted only after the work succeeds, and only if the work did not schedule
 the key again. Retries wait 30 s after the first failure, doubling up to 1 h.
-The schedule table gains a column, `attempt`. The alarm is deleted when the
+The schedule table gains a column, `attempt`. Objects minted before this
+change get it on their next wake through `ALTER TABLE ... ADD COLUMN`, run
+after the schema and ignored when the column exists, so their endpoints keep
+their keys; `tests/workerd/upgrade-test.mjs` mints a chat room with the older
+bundle and runs the scripted session on it again after the new one. The alarm is deleted when the
 table is empty, and `Ctx::cancel` re-arms.
 
 `App::on_alarm(&self, ctx, alarm) -> impl Future<Output = Result<(),

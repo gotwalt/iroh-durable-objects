@@ -17,9 +17,9 @@
 //! - `pkarr_state`: one row with the outcome of the last publish and the count of
 //!   consecutive failures, which drives the retry backoff.
 //!
-//! The app's own tables are created from `App::schema` after these. The schema is created as
-//! is, with no versioning or upgrade path: this is prototype code, and changing the schema
-//! means resetting the object's state.
+//! The app's own tables are created from `App::schema` after these. There is no schema
+//! versioning. The one upgrade, [`SCHEDULE_ADD_ATTEMPT`], adds the column that objects minted
+//! before design note 015 lack, so that their endpoints keep their keys.
 
 /// The tables, created idempotently on every wake.
 pub const SCHEMA: &[&str] = &[
@@ -42,6 +42,14 @@ pub const SCHEMA: &[&str] = &[
         last_status TEXT NOT NULL,
         failures INTEGER NOT NULL)",
 ];
+
+/// Adds `attempt` to a `schedule` table created before design note 015. Run after
+/// [`SCHEMA`] on every wake; on a table that has the column it fails with an error containing
+/// [`DUPLICATE_COLUMN`], which the caller ignores.
+pub const SCHEDULE_ADD_ATTEMPT: &str =
+    "ALTER TABLE schedule ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0";
+/// Text of SQLite's error for adding a column that exists.
+pub const DUPLICATE_COLUMN: &str = "duplicate column name";
 
 /// Adds or replaces work under `?1`, due at `?2` with payload `?3`. Work scheduled again
 /// starts over: its `attempt` is 0.
@@ -88,6 +96,30 @@ mod tests {
             })
             .unwrap();
         assert_eq!(n, 1);
+    }
+
+    /// A `schedule` table from before note 015 gains `attempt` with its rows kept, and the
+    /// upgrade fails with the duplicate-column error once the column exists.
+    #[test]
+    fn schedule_gains_attempt() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute(
+            "CREATE TABLE schedule(key TEXT PRIMARY KEY, due_ms REAL NOT NULL, payload TEXT NOT NULL DEFAULT '')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO schedule(key, due_ms) VALUES ('republish', 5)",
+            [],
+        )
+        .unwrap();
+        for s in SCHEMA {
+            db.execute(s, []).unwrap();
+        }
+        db.execute(SCHEDULE_ADD_ATTEMPT, []).unwrap();
+        assert_eq!(row(&db, "republish"), Some((5.0, 0)));
+        let err = db.execute(SCHEDULE_ADD_ATTEMPT, []).unwrap_err();
+        assert!(err.to_string().contains(DUPLICATE_COLUMN), "{err}");
     }
 
     fn create() -> Connection {

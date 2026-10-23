@@ -47,6 +47,9 @@ that reviews refer to; `docs/design-notes/` records every change to it.
   - `node tests/workerd/fault-test.mjs`: mint and alarm failures, and the
     eviction marker, in Miniflare. Build its bundle first with
     `deploy/build-worker.sh tests/workerd/fault-worker "$PWD/build/fault-worker"`.
+  - `UPGRADE_FROM=<dir> node tests/workerd/upgrade-test.mjs`: an object
+    minted by an older bundle (`just build-worker` at an older commit, in a
+    scratch worktree) keeps its id and room under `build/worker`.
   - `LOCAL_PORT=8799 just local`: the scripted session on workerd. Port 8787
     is taken by another program on the maintainer's machine.
   - `FIXTURE_TARGET=<port> FIXTURE_ADMIN_TOKEN=<token> cargo test -p
