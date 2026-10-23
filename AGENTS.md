@@ -46,30 +46,14 @@ that reviews refer to; `docs/design-notes/` records every change to it.
   - `node tests/workerd/evict-test.mjs`: forced eviction in Miniflare.
   - `LOCAL_PORT=8799 just local`: the scripted session on workerd. Port 8787
     is taken by another program on the maintainer's machine.
-  - The TypeScript host (design note 013), after `npm ci` at the root and
-    `cargo build -p iroh-do-test-peer`:
-    - `npm --prefix packages/iroh-do run check` and `npm --prefix
-      packages/iroh-do test`: connection lifetime and panic recovery in
-      Miniflare.
-    - `npm --prefix examples/echo/server run check`, `run build` and `test`:
-      mint, pkarr, destroy, forced hibernation and the eviction marker.
-    - `npm --prefix examples/chat/server run check`, and `npm --prefix
-      examples/ts-deployment run check`, `run build` and `test` (after `cargo
-      build -p iroh-do-chat`): the deployment `iroh-ts` with the chat and echo
-      classes; routing through the registry and its cache, the endpoint list,
-      and two stock `iroh-do-chat` members across a forced hibernation.
-    - The chat app on workerd: `npm --prefix examples/ts-deployment run dev`
-      (port `LOCAL_PORT`, default 8799), mint with `{"app":"chat"}`, then
-      `cargo run -p iroh-do-chat -- --local --local-port 8799 lifecycle <E>
-      --room`.
-    - The chat golden fixtures (`examples/chat/common/fixtures/`) against the
-      TypeScript chat app: with that `wrangler dev` running with `--var
-      ADMIN_TOKEN:<token>`, `FIXTURE_TARGET=8799 FIXTURE_ADMIN_TOKEN=<token>
-      cargo test -p iroh-do-chat-app --test fixtures fixtures`. Without the
-      variables the same test runs them against the Rust app.
-    - The test peers must be found at `target/debug`; with a different
-      `CARGO_TARGET_DIR`, set `IROH_DO_DEMO` and `IROH_DO_ECHO` for
-      `tests/workerd/evict-test.mjs`.
+  - `FIXTURE_TARGET=<port> FIXTURE_ADMIN_TOKEN=<token> cargo test -p
+    iroh-do-chat-app --test fixtures fixtures`: the chat golden fixtures
+    (`examples/chat/common/fixtures/`) against a `wrangler dev` of a
+    deployment, started with `--var ADMIN_TOKEN:<token>`. Without the variables
+    the same test runs them against the app in the native harness.
+  - The test peers for `tests/workerd/` are found at `target/debug`; with a
+    different `CARGO_TARGET_DIR`, set `IROH_DO_DEMO` and `IROH_DO_ECHO` for
+    `node tests/workerd/evict-test.mjs`.
 - Do not stop `workerd` processes by name (`pkill -f workerd`): the
   maintainer's machine runs other workerd programs. Stop the process you
   started, by its pid.

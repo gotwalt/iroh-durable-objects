@@ -2,9 +2,9 @@
 
 The wire definition of the four ALPNs that the chat object serves and uses:
 `iroh-do/room/1`, `iroh-do/ctl/1`, `iroh-do/echo/1` and `iroh-do/notify/1`. This
-document is the specification. Two servers implement it, the Rust chat app
-(`examples/chat/app`) and the TypeScript chat object (`examples/chat/server`);
-where a server differs from this document, the server is wrong. Every client must
+document is the specification. The Rust chat app (`examples/chat/app`)
+implements it, and so may any other server; where a server differs from this
+document, the server is wrong. Every client must
 be able to talk to it. Where design note 008 and this document differ, this
 document holds (see
 [Differences](#differences-from-design-note-008-and-between-implementations)), and
@@ -360,8 +360,7 @@ the dial-back.
 - That every event is queued for a member. While a delivery to a member is being
   written, a member that does not read can hold it up until `t_silent`, and an
   object may bound what it queues for that member meanwhile by dropping the oldest
-  lines. The TypeScript server keeps at most `SINCE_MAX` = 500, so one `/since`
-  fetches what was dropped.
+  lines; a client then fetches what was dropped with `/since`.
 - The grouping of delivered lines into streams, and the order of a delivery
   relative to the reply of the request that caused it (they travel on different
   streams and connections).
@@ -413,8 +412,8 @@ Where note 008 is silent or says otherwise, this document holds.
 10. **Retention alarm.** Note 008 and `docs/design.md` speak of a daily alarm. The
     apps keep a single pending alarm under the key `prune`, not a daily one, due
     14 days plus 60 seconds after the newest insert. The Rust app moves it on every
-    insert; the TypeScript server arms it on an insert only when none is pending, and
-    when it fires moves it to 14 days plus 60 seconds after the newest record left.
+    insert. Another server may arm it on an insert only when none is pending, and
+    when it fires move it to 14 days plus 60 seconds after the newest record left.
 11. **The chat client** (`examples/chat/client/src/room.rs`) differs from the
     object in two ways, both on purpose and both recorded in
     `fixtures_check.rs`: its `Event` has no `hist` field, so it drops it; and its
